@@ -10,6 +10,7 @@ Start every non-trivial session by reading [vault/Weather Vault/Project Scope.md
 - **CONUS-first.** HRRR covers CONUS only. Shanghai and international markets need a different stack and are out of scope for v1.
 - **Airports-specific.** Models are trained per-airport on that station's ground truth (IEM ASOS 1-min). Local microclimate patterns are where alpha lives.
 - **Real-time pipeline is load-bearing.** Core alpha comes from reacting to new HRRR runs within a 15–45 min window before the market reprices.
+- **Python-first, everywhere.** Every script, data ingest, feature pipeline, model, backtest, analysis, and real-time component in this repo is Python via **`uv`**. The weather (Herbie, xarray, cfgrib, metar, arm-pyart, SynopticPy) and ML (scikit-learn, xgboost, lightgbm, statsmodels) ecosystems are Python-dominant — no TypeScript or Node in this repo. Bash is permitted only for tiny shell-native download/extract flows under `scripts/download/`; anything with real logic, parsing, or data structures goes to Python. See [Language and tooling](#language-and-tooling) for the full stack.
 
 ## How to work in this repo
 
@@ -38,6 +39,28 @@ This project is expected to grow significantly (data ingest, models, backtests, 
 - Scripts should share a skeleton (common logging, idempotency, error handling) rather than each being a one-off.
 - For large, slow, or irreversible actions (multi-GB downloads, deleting files, touching shared state): show the plan first, get explicit go-ahead, then act.
 - Extend existing conventions over adding parallel ones.
+
+### 5. Commit after milestones
+
+When a discrete task, feature, milestone, or meaningful chunk of work is complete, **create a commit** rather than letting uncommitted changes accumulate into one mega-diff. Small, focused commits make git history useful as a debugging and context tool, and they protect against losing work to `git clean` or editor mishaps.
+
+**Commit-worthy moments include:**
+
+- Finishing a data download or transform script
+- Completing a feature-extraction or alignment pipeline
+- Landing a working baseline model or a meaningful eval improvement
+- Substantial edits to `CLAUDE.md`, vault wiki content, or repo conventions
+- A clean refactor or renaming pass
+- Any change the user explicitly says is "done" or "good"
+
+**Commit hygiene** (per the standard Claude Code commit flow):
+
+- Prefer specific `git add <path>` over `git add -A` to avoid accidentally including secrets, `.env`, data files, or unrelated in-flight work.
+- Commit messages should explain the *why*, not just the *what*. Use the HEREDOC + `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` trailer pattern.
+- **Never commit** `.env`, credentials, data files, model artifacts, or `pipeline-workspace/` contents.
+- **Never** skip pre-commit hooks (`--no-verify`) or bypass signing unless the user explicitly asks.
+- For hard-to-reverse git operations (`reset --hard`, force push, branch deletion), confirm with the user before running.
+- Don't create commits the user didn't ask for — but **do** proactively offer to commit when a milestone is clearly complete, and explain what you'd stage and why.
 
 ## Data conventions
 
