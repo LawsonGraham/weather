@@ -27,9 +27,16 @@ The vault is the project memory. It compounds across sessions. Never answer proj
 
 Default to **parallel subagent fan-out + resolution step** when work can be decomposed. Use a single message with multiple Agent tool calls. Always end a fan-out with an explicit merge/synthesis step. Never serialize work that can run in parallel.
 
-### 3. Ingest learnings into the vault
+### 3. Capture knowledge into the vault as you produce it
 
-When research, design decisions, failures, or analyses produce durable knowledge, invoke `/ingest` to file it into the wiki. The `vault-scribe` subagent handles bookkeeping (summary, entity/concept updates, cross-references, log entry). This is how the knowledge base compounds.
+The vault is the project's persistent memory. Every piece of durable knowledge the project produces should end up there — as structured entity / concept / synthesis pages under `vault/Weather Vault/wiki/`, not as prose README files.
+
+Two complementary write paths:
+
+- **For raw-source files** (articles, chats, papers the user drops into `raw-sources/`) → invoke [`vault-ingest`](.claude/skills/vault-ingest/SKILL.md). The `vault-scribe` subagent handles the heavy lifting (summary, entity/concept updates, cross-references, log entry).
+- **For project-internal knowledge** — a new data source added, a schema gotcha discovered, an architectural decision made, a failure diagnosed, a phase milestone completed — invoke [`vault-capture`](.claude/skills/vault-capture/SKILL.md). Writes structured pages under `wiki/entities/`, `wiki/concepts/`, or `wiki/syntheses/`, updates `wiki/index.md`, appends to `wiki/log.md`.
+
+**Invoke capture proactively and often.** A session that produces durable knowledge and doesn't write it down has failed at Rule 3 — future sessions will re-derive the same conclusions cold. The knowledge base only compounds if we actually deposit into it.
 
 ### 4. Build cautiously with clean structure
 
