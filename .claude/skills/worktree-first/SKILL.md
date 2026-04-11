@@ -66,9 +66,21 @@ ln -sfn "$(pwd)/data" "$WT_PATH/data"             # wt/data → main/data
 # REPO_ROOT / "data" will write to main's data/ via the symlink
 ```
 
-**Why the symlink:** scripts compute `REPO_ROOT = Path(__file__).resolve().parents[3]` and then `RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME`. In a worktree, `REPO_ROOT` resolves to the worktree path. Without a symlink, downloads would land in `../weather-wt/<name>/data/raw/<source>/` — duplicated per worktree and lost when the worktree is removed. With the symlink, the `data/` segment of the path resolves transparently to main's `data/`, so every download lands in the canonical location regardless of which worktree ran the script.
+**Mental model — one data directory, many paths to reach it:**
 
-**No script changes needed.** Python's file I/O follows symlinks by default, and the data-script template doesn't need to know whether it's running in a worktree or the main checkout.
+```
+/Users/lawsongraham/git/weather/data/              ← THE real data directory (one physical location)
+/Users/lawsongraham/git/weather-wt/foo/data        ← symlink → /Users/lawsongraham/git/weather/data
+/Users/lawsongraham/git/weather-wt/bar/data        ← symlink → /Users/lawsongraham/git/weather/data
+```
+
+Three paths, **one** physical directory. Every worktree appears to have its own `data/` folder, but it's a pointer back to the same place. When a script in `weather-wt/foo/` writes to `data/raw/iem_asos_1min/NYC/2026-04.csv`, the filesystem follows the symlink and physically stores the file in `/Users/lawsongraham/git/weather/data/raw/iem_asos_1min/NYC/2026-04.csv`. The script doesn't know or care — it just sees a normal path.
+
+**Why we need it:** scripts compute `REPO_ROOT = Path(__file__).resolve().parents[3]` and then `RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME`. In a worktree, `REPO_ROOT` resolves to the worktree path. Without a symlink, downloads would land inside the worktree (`/path/to/worktree/data/raw/...`) — duplicated per worktree and destroyed when the worktree is removed. With the symlink, the `data/` segment of the path resolves transparently to main's `data/`, so every download physically lands in main's data directory regardless of which worktree ran the script.
+
+**No script changes needed.** Python's file I/O follows symlinks by default. The data-script template doesn't need to know whether it's running in a worktree or the main checkout.
+
+**So: yes, we're writing to the data directory. Always. The symlink just guarantees it's *main's* data directory, even when the script lives in a worktree.** No duplicate disk usage, no porting step, no data loss when a worktree is cleaned up.
 
 ### Working in the worktree
 
