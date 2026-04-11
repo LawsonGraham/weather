@@ -9,7 +9,7 @@
 
 ## Syntheses
 
-_Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest` or promoted from `/ask` queries._
+_Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest`, promoted from `/ask` queries, or written directly by `vault-capture`._
 
 - [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
 
@@ -17,13 +17,18 @@ _Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest` or promote
 
 _Named things that matter to the project: airports, markets, providers, competitors, models. Live in `wiki/entities/`._
 
-_(none yet)_
+- [[IEM]] — Iowa Environmental Mesonet; hosts the ASOS 1-minute archive used for Layer 1 ground truth
+- [[Kalshi]] — CFTC-regulated US prediction market; NYC weather markets resolve against [[KNYC]]
+- [[KLGA]] — LaGuardia Airport; NYC-area ASOS 1-minute site; [[Polymarket]] NYC resolution station
+- [[KNYC]] — Central Park NWS first-order climate station; has 1-minute data; [[Kalshi]] NYC resolution station
+- [[Polymarket]] — on-chain binary prediction market; NYC weather markets resolve against [[KLGA]]
 
 ## Concepts
 
 _Ideas and methods: HRRR, MOS, TAF, calibration, Kelly sizing, ensemble spread, and so on. Live in `wiki/concepts/`._
 
-_(none yet)_
+- [[ASOS 1-minute]] — 1-minute-resolution surface weather observations; Layer 1 ground truth
+- [[Polymarket weather market catalog]] — the committed slug catalog at `weather-market-slugs/polymarket.csv` that every Polymarket script keys off
 
 ## How this index works
 
