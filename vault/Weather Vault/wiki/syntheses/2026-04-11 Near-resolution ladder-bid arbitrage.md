@@ -182,6 +182,79 @@ Prior syntheses:
 - Auto-scale per-leg size based on observed L2 depth
 - Target: $100/day sustained across all NYC+8-city markets
 
+## Phase 1-2 complete: L2-verified + live watchman landed (expJ update)
+
+### Temporal distribution (hour-by-hour on april-11)
+
+| UTC hour (EDT) | total seconds | arb seconds | max sum |
+|----------------|---------------|-------------|---------|
+| 19 (15 EDT)    | 1904          | 5           | 1.042   |
+| **20 (16 EDT)** | 2890         | **31**      | **1.043** |
+| 21 (17 EDT)    | 1182          | 3           | 1.004 (barely) |
+
+**The arb is concentrated in a ~1.5-hour window starting ~4 PM EDT.** By
+5 PM EDT the favorite has consolidated past 0.95 and the overround
+naturally compresses. The watchman must run DURING hours 19-21 UTC (15-17
+EDT) to catch anything. Post-5pm-EDT is too late.
+
+### Competitive analysis — are we racing other bots?
+
+Traced every arb-second forward 5 and 30 seconds:
+
+| cluster         | peak  | linger | eaten? |
+|-----------------|-------|--------|--------|
+| 19:54:15-19     | 1.042 | 3 sec  | yes (10c drop in 1s) |
+| 20:08:23-28     | 1.026 | 3 sec  | partial |
+| 20:12:11-13     | 1.043 | 2 sec  | yes |
+| **20:13:42-45** | 1.006 | **30+ sec** | **NO** — stayed above 1.00 for 30s |
+| 20:24:52-53     | 1.025 | 2 sec  | yes |
+
+**The 20:13:42 cluster stayed above 1.005 for 30 consecutive seconds with
+nobody arbing.** Other clusters die in 1-3s (someone's eating them or
+natural cancellation). Mixed evidence: the NYC ladder-bid arb is NOT
+consistently beaten by fast bots. A 500ms-latency taker should capture a
+meaningful share of opportunities.
+
+### L2-verified arb size
+
+Spot-check at 20:13:45 UTC (filtered to YES asset_ids):
+
+| bucket  | top bid  | size           |
+|---------|----------|----------------|
+| 60-61°F | $0.88    | **21.3 shares** |
+| 62-63°F | $0.12    | 38.5 shares    |
+| 64-65°F | $0.001   | 759 (floor)    |
+| 66-67°F | $0.004   | 254            |
+| 7 others| $0.000   | —              |
+
+At 21-share scale (cap = 60-61's top-bid depth):
+- Receipts: 21 × (0.88+0.12+0.001+0.004) = **$21.105**
+- Max obligation: $21.00
+- **Net profit: $0.105 per cycle / $21 capital (0.5% ROI)**
+
+Going to level 2 on 60-61 ($0.85 × 6 more shares) flips the edge
+negative — the 21-share cap is hard. Size limit varies per arb
+instance: 5 shares at 20:12:13 ($0.215 profit on $5) vs 21 shares at
+20:13:45 ($0.105 on $21).
+
+### Watchman Phase 2 — live observer launched
+
+`scripts/polymarket_book/watchman.py` landed and running as a
+caffeinate daemon alongside the recorder. Design:
+
+- Stateless WS observer — one connection, same subscription set as
+  the recorder (all open NYC slugs × 2 tokens)
+- Per-YES-token top-of-book state + per-market-date evaluation on every
+  message
+- Sub-second dedupe to avoid spamming during 3-4 sec linger clusters
+- Logs alerts to `data/processed/polymarket_book_watchman/alerts.jsonl`
+- Smoke test (21:25 UTC): 0 alerts, 1487 msgs — validated zero-alert
+  state during the post-arb window
+
+**Will fire on april-12 tomorrow** during 20-21 UTC (16-17 EDT) when
+that market enters its arb window. Live alert count tomorrow will
+validate the 20-30/hour rate predicted from exp I.
+
 ## Negative checks still needed
 
 1. **Is the $0.00 bid really "MM walkaway" or is it a data artifact?** Check
