@@ -6,6 +6,31 @@ related: "[[2026-04-11 Near-resolution ladder-bid arbitrage]], [[2026-04-11 Real
 
 # Strategy D V1 real-ask cost + pre-16-EDT pump (2026-04-11)
 
+## expM update (2026-04-11 later) — Strategy D V3 at 17 EDT wins on small sample
+
+Ran V1 (16 EDT), V3 (17 EDT), V4 (18 EDT) across ~15 closed NYC days using
+the hourly prices_history dataset. Results:
+
+| strat | n  | hit_rate | net_avg | **cum_pnl** |
+|-------|----|----------|---------|-------------|
+| V1-16 | 15 | 53.3%    | +8.87   | +$133       |
+| V3-17 | 13 | 38.5%    | +14.95  | **+$194**   |
+| V4-18 |  9 | 33.3%    | +26.61  | **+$240**   |
+
+**Later entry time → higher cumulative PnL** despite lower hit rate.
+Mechanism: later entries buy the +2 bucket at a deeper discount on days
+where the market has decided it won't win, and when there's a
+late-afternoon surprise peak (2026-03-20 example, V3 bought at p=0.018
+and earned 55×), the ROI multiplier dominates.
+
+**Provisional recommendation**: V3 at 17 EDT as the primary Strategy D
+entry time, not V1 at 16 EDT. But sample is 13 days → confidence interval
+is wide. Needs more data before live deployment.
+
+See `expM_NOTES.md` for full breakdown.
+
+---
+
 ## ⚠️ PARTIALLY RETRACTED BY expL (2026-04-11 later)
 
 Exp L re-checked the per-minute price path of the april-11 ladder and
