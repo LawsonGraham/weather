@@ -1,13 +1,16 @@
 ---
 name: data-validation
 description: >
-  Paranoid first-principles audit methodology for every data source added to
-  this repo. Use BEFORE marking any new data source "done", AFTER any
-  non-trivial change to a download or transform script, and as a scheduled
-  re-verification for production-critical data. Codifies a 6-level rigor
-  ladder from manifest presence checks to bit-for-bit upstream re-fetch
-  comparison. Every level has specific, reusable checks — no hand-waving, no
-  "looks fine", no trusting the manifest. When in doubt, climb the ladder.
+  Paranoid first-principles audit methodology for every data source in this
+  repo. Invoke PROACTIVELY and AGGRESSIVELY at any "done" boundary — before
+  calling a new data source complete, before using data for a backtest or
+  model training, before shipping anything into production, after any change
+  to a download / transform / validate script. Auto-triggers on phrases like
+  "is this source done", "finalize this", "audit this", "validate the data",
+  "ready to trade", "ship it", "phase complete", "release", "looks good",
+  "ready for modeling". Defines a 6-level rigor ladder from manifest checks
+  to bit-for-bit upstream re-fetch comparison. Has already caught real bugs
+  every shape-only check missed. When in doubt, climb the ladder.
 ---
 
 # Data-validation contract

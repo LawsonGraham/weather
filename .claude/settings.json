@@ -13,7 +13,6 @@
       "Bash(git log *)",
       "Bash(git branch)",
       "Bash(git branch *)",
-      "Bash(mkdir -p pipeline-workspace/*)",
       "Bash(mkdir -p data/*)",
       "Bash(uv run *)",
       "Bash(uv sync *)",

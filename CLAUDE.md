@@ -31,10 +31,7 @@ Default to **parallel subagent fan-out + resolution step** when work can be deco
 
 The vault is the project's persistent memory. Every piece of durable knowledge the project produces should end up there — as structured entity / concept / synthesis pages under `vault/Weather Vault/wiki/`, not as prose README files.
 
-Two complementary write paths:
-
-- **For raw-source files** (articles, chats, papers the user drops into `raw-sources/`) → invoke [`vault-ingest`](.claude/skills/vault-ingest/SKILL.md). The `vault-scribe` subagent handles the heavy lifting (summary, entity/concept updates, cross-references, log entry).
-- **For project-internal knowledge** — a new data source added, a schema gotcha discovered, an architectural decision made, a failure diagnosed, a phase milestone completed — invoke [`vault-capture`](.claude/skills/vault-capture/SKILL.md). Writes structured pages under `wiki/entities/`, `wiki/concepts/`, or `wiki/syntheses/`, updates `wiki/index.md`, appends to `wiki/log.md`.
+Every new piece of durable knowledge — a data source added, a schema gotcha discovered, an architectural decision made, a failure diagnosed, a phase milestone completed — is captured via [`vault-capture`](.claude/skills/vault-capture/SKILL.md). The skill writes structured pages under `wiki/entities/`, `wiki/concepts/`, or `wiki/syntheses/`, updates `wiki/index.md`, and appends to `wiki/log.md`. External raw-source files dropped into `raw-sources/` (chats, articles, papers) get summarized into a synthesis page inline — no separate ingest skill needed.
 
 **Invoke capture proactively and often.** A session that produces durable knowledge and doesn't write it down has failed at Rule 3 — future sessions will re-derive the same conclusions cold. The knowledge base only compounds if we actually deposit into it.
 
@@ -71,7 +68,7 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 
 - Prefer specific `git add <path>` over `git add -A` to avoid accidentally including secrets, `.env`, data files, or unrelated in-flight work.
 - Commit messages should explain the *why*, not just the *what*. Use the HEREDOC + `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` trailer pattern.
-- **Never commit** `.env`, credentials, data files, model artifacts, or `pipeline-workspace/` contents.
+- **Never commit** `.env`, credentials, data files, or model artifacts.
 - **Never** skip pre-commit hooks (`--no-verify`) or bypass signing unless the user explicitly asks.
 - For hard-to-reverse git operations (`reset --hard`, force push, branch deletion), confirm with the user before running.
 - Don't create commits the user didn't ask for — but **do** proactively offer to commit when a milestone is clearly complete, and explain what you'd stage and why.
@@ -186,7 +183,7 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 - Probabilistic outputs preferred over point forecasts. `P(high > threshold)` is the target shape.
 - Calibration is evaluated separately from accuracy (reliability curves, Brier score, log loss).
 - HRRR ensemble (HRRRx, 36 members) provides a free empirical distribution — use it.
-- See `.claude/skills/model-training/SKILL.md` for the full conventions.
+- **Time-based splits only.** Never random train/test splits on time-series data.
 
 ## Language and tooling
 
@@ -281,9 +278,9 @@ weather/
 ├── CLAUDE.md                     # this file — project rules
 ├── README.md                     # minimal repo entry point
 ├── .claude/
-│   ├── settings.json             # project tool permissions
-│   ├── agents/                   # subagent definitions (vault-scribe, weather-data-expert)
-│   └── skills/                   # skill definitions (data-script, minimal-docs, vault-*, ...)
+│   ├── settings.json             # project tool permissions + hook registration
+│   ├── hooks/                    # vault_health (SessionStart) + vault_capture_reminder (PostToolUse)
+│   └── skills/                   # data-script, data-validation, minimal-docs, vault-capture, vault-seed, weather-data, worktree-first, caveman
 ├── vault/Weather Vault/          # Obsidian vault — first-class project surface
 │   ├── Project Scope.md          # canonical scoping doc
 │   ├── Execution Stack — Source Review.md   # execution-stack decision doc

@@ -4,13 +4,11 @@ description: >
   Capture project-internal knowledge into the Obsidian wiki as it's produced.
   Use PROACTIVELY and IMMEDIATELY after: adding a new data source (new
   scripts/<source>/ folder), discovering a schema gotcha or API quirk, making
-  an architectural decision, learning from a failure, or completing a phase
-  milestone. Writes structured entity / concept / synthesis pages under
-  wiki/, updates wiki/index.md, and appends to wiki/log.md. Complements
-  vault-ingest (which handles raw-source files dropped into raw-sources/) —
-  this skill handles project-internal knowledge that emerges from the work
-  itself. Invoke whenever the session has produced durable knowledge that
-  should survive into future sessions.
+  an architectural decision, learning from a failure, completing a phase
+  milestone, or summarizing a raw-source file dropped into raw-sources/.
+  Writes structured entity / concept / synthesis pages under wiki/, updates
+  wiki/index.md, and appends to wiki/log.md. Invoke whenever the session has
+  produced durable knowledge that should survive into future sessions.
 allowed-tools: Read, Glob, Grep, Write, Edit
 ---
 
@@ -18,7 +16,7 @@ allowed-tools: Read, Glob, Grep, Write, Edit
 
 The vault is the project's persistent memory. Every session reads from it (via `vault-seed`). Every session should also **write** to it when it produces durable knowledge. Without this discipline, the vault atrophies while the repo grows — a knowledge gap that compounds and makes every future session start cold.
 
-This skill is complementary to `vault-ingest` (which handles external raw-source files the user drops into `raw-sources/`). **`vault-capture` is for project-internal knowledge that emerges from doing the work** — knowledge that lives nowhere else until we write it down.
+**This skill is the single write path into the vault.** It covers both project-internal knowledge (new data sources, gotchas, decisions, failures, milestones — the common case) and summarization of external raw-source files (chats, articles, papers dropped into `raw-sources/` — the rare case). In both cases, the output is the same: a structured entity / concept / synthesis page plus an `index.md` entry plus a `log.md` append.
 
 ## When to invoke
 
@@ -119,7 +117,7 @@ Every time you add a page under `wiki/entities/`, `wiki/concepts/`, or `wiki/syn
 
 ## Anti-patterns
 
-- **Forgetting to update `wiki/index.md`.** A page that isn't in the index is effectively orphaned. `vault-lint` will flag it.
+- **Forgetting to update `wiki/index.md`.** A page that isn't in the index is effectively orphaned.
 - **Forgetting to append to `wiki/log.md`.** The log is how sessions reconstruct what happened recently.
 - **Writing prose without wikilinks.** Flat pages waste the graph.
 - **Duplicating an existing page** because you didn't grep first. Always check before creating.
@@ -140,9 +138,6 @@ There is an obvious backlog of entity and concept pages to create, for example:
 
 ## Relationship to other skills
 
-- `vault-seed` — reads the vault at the start of work. Complementary read-side skill.
-- `vault-query` — asks specific questions of the vault. Read-side.
-- `vault-ingest` — ingests raw-source files dropped into `raw-sources/`. Different trigger: external files, not project-internal knowledge.
-- `vault-scribe` (subagent) — the heavy-lifting ingest worker behind `vault-ingest`. You can also delegate large capture work to the `vault-scribe` subagent if the scope is big, but for small captures (a single entity or concept page), write directly.
-- `vault-lint` — health-checks the vault for orphans, contradictions, missing pages. Periodically catches what `vault-capture` missed.
+- `vault-seed` — reads the vault at the start of work. Complementary read-side: `vault-seed` loads context at session start; `vault-capture` writes it back as new knowledge emerges.
 - `minimal-docs` — the "no README, no documentation sprawl" rule. The vault is the one place where structured long-form knowledge is welcome — but only in the specific shapes above (entity / concept / synthesis), never as README-style how-to prose.
+- The `SessionStart` and `PostToolUse` hooks at `.claude/hooks/` keep the vault-repo gap visible and nudge you to capture after commits that touch `scripts/` but not `vault/`.
