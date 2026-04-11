@@ -1,111 +1,193 @@
 # `scripts/download/` — download script convention
 
-Every data source we ingest has **exactly one** download script here. That script is the canonical way to produce `data/raw/<source>/`. If you downloaded something by hand or via an upstream script, either wrap it in a download script here or remove it.
+Every data source we ingest has **exactly one** downloader here, and each
+downloader lives in its own subfolder. That subfolder is the canonical way to
+produce `data/raw/<source>/`. If you downloaded something by hand or via an
+upstream script, either wrap it in a downloader here or remove it.
 
-## Contract
+## Layout
 
-Every download script must:
+```
+scripts/download/
+├── README.md                              (this file — the contract)
+├── _common.py                             (stdlib-only shared helpers)
+└── <source_name>/                         (one folder per source; same name as data/raw/<source_name>/)
+    ├── README.md                          (source-specific notes: upstream URLs, quirks, schema corrections)
+    ├── script.py                          (the downloader — always Python)
+    └── (any source-specific helpers, schemas, sample files, etc.)
+```
 
-1. **Target a single source** named `<source>` and populate `data/raw/<source>/`. The script file is `<source>.sh` or `<source>.py` — same basename as the raw dir.
-2. **Write `data/raw/<source>/MANIFEST.json`** following the schema documented in `data/README.md`. Start with `status: "in_progress"` at the start of a run, mark `complete` on success, `failed` on error (via an EXIT trap).
-3. **Tee all output** to `data/raw/<source>/download.log`.
-4. **Be idempotent**: before doing any work, read the existing manifest (if any). If `download.status == "complete"`, print "already downloaded, skipping" and exit 0. If `in_progress` or `failed`, print a warning and exit 1 unless `--force` is passed.
-5. **Support `--force`** to bypass the idempotency check and re-download.
-6. **Fail loudly**: `set -euo pipefail` in bash, unhandled exceptions in Python. Never silently swallow errors.
-7. **Check preconditions up front**: required binaries, required disk space (source-dependent), network reachability. Use the helpers in `_common.sh`.
-8. **Never touch `data/interim/` or `data/processed/`.** Downloads are strictly raw.
+**Rule:** `<source_name>` in the scripts folder must exactly match the
+directory name under `data/raw/`. Matching names make the relationship between
+script and data obvious at a glance.
 
-## Shared helpers — `_common.sh`
+## Contract — every downloader must
 
-Source from bash scripts via:
+1. **Target a single source** named `<source_name>` and populate
+   `data/raw/<source_name>/`.
+2. **Write `data/raw/<source>/MANIFEST.json`** following the v1 schema (see
+   `data/README.md`). Start with `status: "in_progress"`, flip to
+   `"complete"` on success, or `"failed"` on error. All three state
+   transitions are handled automatically by the `DownloadManifest` context
+   manager in `_common.py`.
+3. **Tee all output** to `data/raw/<source>/download.log` (the
+   `configure_logging()` helper handles this).
+4. **Be idempotent.** Before doing any work, read the existing manifest via
+   `DownloadManifest.check_already_complete(...)`. If `complete`, print a
+   skip message and exit 0. If `in_progress` or `failed`, refuse to run
+   unless `--force` is passed.
+5. **Support `--force`** (bypass idempotency; keep any partial archive so
+   the downloader can resume) and **`--fresh`** (also delete the partial;
+   implies `--force`).
+6. **Fail loudly.** Unhandled exceptions bubble out of the manifest context
+   manager, which flips the manifest to `failed` and re-raises.
+7. **Check preconditions up front:** required binaries via `require_cmd(...)`,
+   free disk via `require_disk_gib(...)`, network reachability if relevant.
+8. **Never touch `data/interim/` or `data/processed/`.** Downloads are
+   strictly raw.
 
-```bash
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-source "$REPO_ROOT/scripts/download/_common.sh"
+## Why Python (and not bash)
+
+- Manifest I/O, JSON handling, string parsing, and error recovery are
+  cleaner in Python than in bash. The bash version of `_common.sh` had a
+  `python3 -c` embedded for every manifest write — we were already
+  half-Python.
+- Some downloads will paginate APIs (Kalshi, Polymarket, Synoptic, IEM
+  ASOS); those must be Python anyway, so consistency wins.
+- The context-manager pattern (`with DownloadManifest(...) as m: ...`) is
+  significantly less error-prone than bash's `trap EXIT` approach — the
+  manifest lifecycle is scoped to the block, and there's no risk of
+  forgetting to call `trap_failure_for`.
+- Bash is still a fine tool for shelling out to `aria2c`/`curl`/`zstd`/`tar`
+  — we just invoke those from Python via `subprocess` + `run_and_stream()`.
+
+## `_common.py` — shared helpers
+
+Import sibling-style from a per-source script:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common import (
+    DownloadManifest,
+    configure_logging,
+    require_cmd,
+    require_disk_gib,
+    dir_bytes,
+    file_bytes,
+    run_and_stream,
+)
 ```
 
 Provides:
 
-- `log INFO|WARN|ERROR "message"` — timestamped line to stdout AND to the log file set by `set_log_file`
-- `set_log_file <path>` — route subsequent `log` output to an additional file
-- `die "message"` — log ERROR and `exit 1`
-- `require_cmd <cmd>...` — exit if any binary is missing
-- `require_disk_gib <gib> <path>` — exit if `path`'s filesystem has less than `gib` GiB free
-- `trap_failure_for <manifest_path>` — install an EXIT trap that sets the manifest's status to `failed` on abnormal exit
-- `manifest_init --source <name> --description <desc> --repo <url> --url <url> --script <path> --version <n> --target <raw_dir>` — write initial MANIFEST.json with `download.status = "in_progress"`
-- `manifest_set <manifest_path> <dot.path> <value>` — update a field (e.g. `manifest_set path download.status complete`)
-- `manifest_complete <manifest_path>` — set status to `complete`, fill `completed_at`, sizes
-- `bytes_of <path>` — portable byte count
-- `dir_bytes_of <path>` — total bytes under a directory
-- `utc_now` — ISO 8601 UTC timestamp
+- **`DownloadManifest`** — context manager that writes the initial
+  in-progress manifest on entry, flips to `failed` on exception or forgotten
+  `complete()`, and flips to `complete` when the body calls
+  `manifest.complete(...)`. Also exposes `check_already_complete()` for the
+  idempotency gate.
+- **`configure_logging(log_path)`** — sets up the `download` logger to tee
+  timestamped lines to stdout and the specified file.
+- **`require_cmd(*cmds)`** — exit with a clean error if any binary is
+  missing.
+- **`require_disk_gib(n, path)`** — exit if the filesystem backing `path`
+  has less than `n` GiB free; logs the actual free space on success.
+- **`file_bytes(path)`** / **`dir_bytes(path)`** — portable size queries.
+- **`run_and_stream(cmd, log_path)`** — run a subprocess and tee its
+  combined stdout/stderr to both the terminal and the log file; raises
+  `CalledProcessError` on non-zero exit.
+- **`utc_now()`** — ISO 8601 UTC timestamp string.
 
-All JSON manipulation uses `python3` (always present on macOS) rather than `jq` to avoid an extra dependency.
+## Writing a new downloader — skeleton
 
-## Script skeleton
+```python
+#!/usr/bin/env python3
+"""Download the <source_name> dataset from <upstream>."""
 
-```bash
-#!/bin/bash
-# scripts/download/<source>.sh — one-line description
-set -euo pipefail
+from __future__ import annotations
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-source "$REPO_ROOT/scripts/download/_common.sh"
+import argparse
+import shutil
+import sys
+from pathlib import Path
 
-SOURCE_NAME="<source>"
-UPSTREAM_REPO="https://github.com/..."
-UPSTREAM_URL="https://..."
-SCRIPT_PATH="scripts/download/${SOURCE_NAME}.sh"
-SCRIPT_VERSION=1
-DESCRIPTION="<one sentence>"
-REQUIRED_DISK_GIB=50     # set per source
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-RAW_DIR="$REPO_ROOT/data/raw/$SOURCE_NAME"
-MANIFEST="$RAW_DIR/MANIFEST.json"
-LOG_FILE="$RAW_DIR/download.log"
+from _common import (
+    DownloadManifest,
+    configure_logging,
+    dir_bytes,
+    file_bytes,
+    require_cmd,
+    require_disk_gib,
+    run_and_stream,
+)
 
-FORCE=0
-for arg in "$@"; do
-    case "$arg" in
-        --force) FORCE=1 ;;
-        *) die "unknown argument: $arg" ;;
-    esac
-done
+SOURCE_NAME = "<source_name>"
+UPSTREAM_REPO = "https://..."
+UPSTREAM_URL  = "https://..."
+SCRIPT_PATH = f"scripts/download/{SOURCE_NAME}/script.py"
+SCRIPT_VERSION = 1
+DESCRIPTION = "<one sentence>"
+REQUIRED_DISK_GIB = 10   # tune per source
 
-# Preconditions
-require_cmd curl python3 tar zstd
-require_disk_gib "$REQUIRED_DISK_GIB" "$REPO_ROOT"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+RAW_DIR   = REPO_ROOT / "data" / "raw" / SOURCE_NAME
+MANIFEST_PATH = RAW_DIR / "MANIFEST.json"
+LOG_PATH  = RAW_DIR / "download.log"
+TARGET_REL = f"data/raw/{SOURCE_NAME}"
 
-# Idempotency check
-if [ -f "$MANIFEST" ] && [ "$FORCE" -eq 0 ]; then
-    status=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['download']['status'])")
-    case "$status" in
-        complete)    log INFO "already downloaded ($SOURCE_NAME), skipping"; exit 0 ;;
-        in_progress) die "manifest shows in_progress — another run may be active, or it crashed. Use --force to retry." ;;
-        failed)      die "previous run failed. Investigate, then re-run with --force." ;;
-    esac
-fi
 
-mkdir -p "$RAW_DIR"
-set_log_file "$LOG_FILE"
-log INFO "starting download of $SOURCE_NAME"
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=f"Download the {SOURCE_NAME} dataset.")
+    p.add_argument("--force", action="store_true", help="bypass idempotency; keep partial")
+    p.add_argument("--fresh", action="store_true", help="delete partial then retry (implies --force)")
+    return p.parse_args()
 
-manifest_init \
-    --source "$SOURCE_NAME" \
-    --description "$DESCRIPTION" \
-    --repo "$UPSTREAM_REPO" \
-    --url "$UPSTREAM_URL" \
-    --script "$SCRIPT_PATH" \
-    --version "$SCRIPT_VERSION" \
-    --target "data/raw/$SOURCE_NAME"
 
-trap_failure_for "$MANIFEST"
+def main() -> int:
+    args = parse_args()
+    force = args.force or args.fresh
 
-# --- source-specific download + extract goes here ---
+    if not force and MANIFEST_PATH.exists() and DownloadManifest.check_already_complete(MANIFEST_PATH, force=False):
+        print(f"{SOURCE_NAME} already downloaded; skipping. Pass --force to re-download.")
+        return 0
 
-manifest_complete "$MANIFEST"
-log INFO "done: $SOURCE_NAME"
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    log = configure_logging(LOG_PATH)
+
+    require_cmd("curl")               # tune per source
+    require_disk_gib(REQUIRED_DISK_GIB, REPO_ROOT)
+
+    with DownloadManifest(
+        manifest_path=MANIFEST_PATH,
+        source_name=SOURCE_NAME,
+        description=DESCRIPTION,
+        upstream_repo=UPSTREAM_REPO,
+        upstream_url=UPSTREAM_URL,
+        script_path=SCRIPT_PATH,
+        script_version=SCRIPT_VERSION,
+        target_rel=TARGET_REL,
+    ) as manifest:
+        # ... source-specific download + extract logic ...
+        manifest.complete(archive_bytes=..., extracted_bytes=..., contents=[...])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 ```
 
-## Python flavor
+## Dependencies
 
-Python download scripts follow the same contract: `MANIFEST.json` with the same schema, `download.log` in the same place, `--force` flag, idempotency check, trap/except to mark failed. A Python equivalent of `_common.sh` will live at `scripts/download/_common.py` when the first Python downloader is written (not now).
+Download scripts use **Python stdlib only** until we set up a project
+virtualenv. Shell out to `aria2c`/`curl`/`zstd`/`tar`/`gunzip`/`xz` via
+`subprocess` for the heavy I/O — reimplementing those in pure Python is
+slower and less robust.
+
+Downloaders that need to paginate a REST API (Kalshi, Polymarket, Synoptic,
+IEM) will switch to `httpx` once the project virtualenv is bootstrapped; at
+that point the download scripts can be promoted from stdlib to
+`pyproject.toml`-tracked dependencies.
