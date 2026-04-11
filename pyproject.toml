@@ -15,28 +15,24 @@ dependencies = [
     "numpy>=2.0",
     "pyarrow>=18.0",
     "duckdb>=1.1",
-
     # --- weather data ---
     "herbie-data>=2024.8",      # HRRR / GFS / RAP byte-range GRIB2 subset access
     "xarray>=2024.10",          # gridded data (HRRR / NWP)
     "cfgrib>=0.9.14",           # xarray GRIB2 backend (bundles eccodes wheels)
     "metar>=1.11",              # METAR string parser
-
     # --- HTTP / APIs ---
     "httpx>=0.28",              # Kalshi / Polymarket / NWS / IEM / etc.
-
     # --- config / validation ---
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "python-dotenv>=1.0",
-
     # --- CLI / UX ---
     "typer>=0.15",              # typed CLI framework
     "rich>=13.9",               # terminal rendering
     "tqdm>=4.67",               # progress bars
-
     # --- logging ---
     "structlog>=24.4",          # structured logging
+    "pytz>=2026.1.post1",
 ]
 
 # Dev-only dependencies. Installed with `uv sync` by default.
