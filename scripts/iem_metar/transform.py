@@ -33,8 +33,10 @@ Self-contained: all helpers inlined. Follows the data-script skill contract.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
+import re
 import shutil
 import sys
 from contextlib import AbstractContextManager
@@ -43,6 +45,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import polars as pl
+from metar import Metar  # type: ignore[import-untyped]
 
 ParquetCompression = Literal["zstd", "snappy", "lz4", "uncompressed"]
 
@@ -50,11 +53,13 @@ ParquetCompression = Literal["zstd", "snappy", "lz4", "uncompressed"]
 
 STEP_NAME = "iem_metar_parquet"
 SOURCE_NAME = "iem_metar"
-SCRIPT_VERSION = 1
+SCRIPT_VERSION = 2
 DESCRIPTION = (
     "Transform IEM METAR raw CSVs (hourly + SPECI) into per-(station,month) "
     "Parquet under data/processed/iem_metar/. Missing values (M) → null, trace "
-    "precip (T) → 0.0001, valid parsed to Datetime[us, UTC]."
+    "precip (T) → 0.0001, valid parsed to Datetime[us, UTC]. v2 adds RMK remark "
+    "decoding (precise T/Td, SLP, 6h/24h max/min temp, 6h/24h precip, snow "
+    "depth, PRESRR/PRESFR flags, TSB/TSE timing) via the `metar` parser."
 )
 REQUIRED_DISK_GIB = 2
 
@@ -106,6 +111,135 @@ STRING_COLS: tuple[str, ...] = (
 # column numeric while preserving the qualitative signal.
 TRACE_SENTINEL = "T"
 TRACE_VALUE_INCHES = 0.0001
+
+# --- RMK remark decoding --------------------------------------------------- #
+
+# Output schema for decoded remark fields. Polars needs a struct dtype so the
+# map_elements call has a concrete return type; it's also the authoritative
+# column-order / type spec for the downstream `with_columns` expansion.
+RMK_STRUCT_DTYPE = pl.Struct(
+    {
+        "temp_c_rmk": pl.Float64,  # precise temp from T-group (0.1°C)
+        "dewpt_c_rmk": pl.Float64,  # precise dewpt from T-group (0.1°C)
+        "slp_mb_rmk": pl.Float64,  # sea-level pressure from SLP-group (0.1 mb)
+        "max_temp_6hr_c": pl.Float64,  # 1-group — present at 00/06/12/18Z
+        "min_temp_6hr_c": pl.Float64,  # 2-group — present at 00/06/12/18Z
+        "max_temp_24hr_c": pl.Float64,  # 4-group — present at 00Z
+        "min_temp_24hr_c": pl.Float64,  # 4-group — present at 00Z
+        "precip_6hr_in": pl.Float64,  # 6-group
+        "precip_24hr_in": pl.Float64,  # 7-group
+        "snowdepth_in_rmk": pl.Float64,  # 4/xxx group
+        "press_tendency_3hr_mb": pl.Float64,  # 5-group magnitude (0.1 mb)
+        "press_tendency_3hr_code": pl.Int64,  # 5-group character code (0..8)
+        "presrr": pl.Boolean,  # PRESRR flag (pressure rising rapidly)
+        "presfr": pl.Boolean,  # PRESFR flag (pressure falling rapidly)
+        "tsb_minute": pl.Int64,  # thunderstorm begin, minutes-past-hour
+        "tse_minute": pl.Int64,  # thunderstorm end, minutes-past-hour
+    }
+)
+
+# RMK-only regexes for fields the `metar` package does NOT expose as
+# attributes. Applied to the full raw METAR string; matches are case-
+# sensitive per METAR spec.
+_RE_PRESRR = re.compile(r"\bPRESRR\b")
+_RE_PRESFR = re.compile(r"\bPRESFR\b")
+# Thunderstorm begin / end times. Format is TSBhhmm or TSBmm (hour optional,
+# minutes always 2 digits). Same for TSE. See FMH-1 §12.6.8.
+_RE_TSB = re.compile(r"\bTSB(\d{2})?(\d{2})\b")
+_RE_TSE = re.compile(r"\bTSE(\d{2})?(\d{2})\b")
+
+
+def _safe_val(obj: Any, unit: str | None) -> float | None:
+    """Extract ``.value(unit)`` from a python-metar Datatypes object, returning
+    None on any failure (missing attr, parse glitch, divide-by-zero, ...).
+    """
+    if obj is None:
+        return None
+    try:
+        return float(obj.value(unit)) if unit else float(obj.value())
+    except Exception:
+        return None
+
+
+def parse_metar_remarks(raw: str | None) -> dict[str, Any]:
+    """Parse a raw METAR string and return the RMK-derived fields as a dict.
+
+    All fields default to ``None`` / ``False``. If the ``metar`` parser raises
+    (malformed report, unrecognised group), the fields it couldn't populate
+    stay ``None``; the booleans still get filled via regex on the raw string.
+    """
+    out: dict[str, Any] = {
+        "temp_c_rmk": None,
+        "dewpt_c_rmk": None,
+        "slp_mb_rmk": None,
+        "max_temp_6hr_c": None,
+        "min_temp_6hr_c": None,
+        "max_temp_24hr_c": None,
+        "min_temp_24hr_c": None,
+        "precip_6hr_in": None,
+        "precip_24hr_in": None,
+        "snowdepth_in_rmk": None,
+        "press_tendency_3hr_mb": None,
+        "press_tendency_3hr_code": None,
+        "presrr": False,
+        "presfr": False,
+        "tsb_minute": None,
+        "tse_minute": None,
+    }
+    if not raw:
+        return out
+
+    # Regex-only fields — independent of the metar parser.
+    if _RE_PRESRR.search(raw):
+        out["presrr"] = True
+    if _RE_PRESFR.search(raw):
+        out["presfr"] = True
+    if (m_tsb := _RE_TSB.search(raw)) is not None:
+        out["tsb_minute"] = int(m_tsb.group(2))
+    if (m_tse := _RE_TSE.search(raw)) is not None:
+        out["tse_minute"] = int(m_tse.group(2))
+
+    # 3-hour pressure-tendency group: ``5tppp`` where t ∈ 0..8 and ppp is 0.1mb.
+    # python-metar has a handler but doesn't expose a normalised attribute on
+    # the Metar object, so parse it ourselves. Require a word boundary and a
+    # trailing space or end-of-string so we don't match mid-remark numeric
+    # runs like ``51057``'s possible confusion with temperature codes.
+    m_pt = re.search(r"(?:^|\s)5([0-8])(\d{3})(?:\s|$)", raw)
+    if m_pt is not None:
+        out["press_tendency_3hr_code"] = int(m_pt.group(1))
+        out["press_tendency_3hr_mb"] = int(m_pt.group(2)) / 10.0
+
+    # Everything below comes from python-metar's attribute surface. Wrap the
+    # parse in a broad try — METAR has many quirky producers and the parser
+    # can raise on unknown groups; we prefer "fewer fields, still decoded"
+    # over "one bad METAR nukes the whole file".
+    try:
+        m = Metar.Metar(raw, strict=False)
+    except Exception:
+        return out
+
+    out["temp_c_rmk"] = _safe_val(getattr(m, "temp", None), "C")
+    out["dewpt_c_rmk"] = _safe_val(getattr(m, "dewpt", None), "C")
+    out["slp_mb_rmk"] = _safe_val(getattr(m, "press_sea_level", None), "MB")
+    out["max_temp_6hr_c"] = _safe_val(getattr(m, "max_temp_6hr", None), "C")
+    out["min_temp_6hr_c"] = _safe_val(getattr(m, "min_temp_6hr", None), "C")
+    out["max_temp_24hr_c"] = _safe_val(getattr(m, "max_temp_24hr", None), "C")
+    out["min_temp_24hr_c"] = _safe_val(getattr(m, "min_temp_24hr", None), "C")
+    out["precip_6hr_in"] = _safe_val(getattr(m, "precip_6hr", None), "IN")
+    out["precip_24hr_in"] = _safe_val(getattr(m, "precip_24hr", None), "IN")
+    # python-metar's snowdepth is a Datatypes.precipitation object; prefer
+    # .value('IN'), fall back to float() on the object itself for older
+    # builds that expose a plain numeric.
+    snowdepth_obj = getattr(m, "snowdepth", None)
+    if snowdepth_obj is not None:
+        try:
+            out["snowdepth_in_rmk"] = float(snowdepth_obj.value("IN"))
+        except Exception:
+            with contextlib.suppress(Exception):
+                out["snowdepth_in_rmk"] = float(snowdepth_obj)
+
+    return out
+
 
 # --- paths ----------------------------------------------------------------- #
 
@@ -349,6 +483,16 @@ def transform_one(src: Path, dst: Path, compression: ParquetCompression) -> int:
 
     if cast_exprs:
         df = df.with_columns(cast_exprs)
+
+    # RMK remark decoding — append decoded fields as new columns. Only runs
+    # if a `metar` column is present (it always is for the IEM data=all feed,
+    # but this guards trimmed schemas).
+    if "metar" in df.columns:
+        df = df.with_columns(
+            pl.col("metar")
+            .map_elements(parse_metar_remarks, return_dtype=RMK_STRUCT_DTYPE)
+            .alias("_rmk")
+        ).unnest("_rmk")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
