@@ -28,6 +28,7 @@ _Named things that matter to the project: airports, markets, providers, competit
 _Ideas and methods: HRRR, MOS, TAF, calibration, Kelly sizing, ensemble spread, and so on. Live in `wiki/concepts/`._
 
 - [[ASOS 1-minute]] — 1-minute-resolution surface weather observations; Layer 1 ground truth
+- [[METAR]] — Layer 3 aviation routine + SPECI observations from IEM: schema, RMK-group decoding, market-relevance shortcuts
 - [[Polymarket weather market catalog]] — the committed slug catalog at `weather-market-slugs/polymarket.csv` that every Polymarket script keys off
 
 ## How this index works

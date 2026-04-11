@@ -59,3 +59,11 @@
 - Page: wiki/concepts/Polymarket weather market catalog.md
 - Trigger: backfill for `scripts/polymarket_weather_slugs/` (new data source, no concept page yet)
 - Related: [[Polymarket]], [[2026-04-11 Polymarket schema corrections]]
+
+## [2026-04-11] capture | METAR concept page added
+
+- Created `wiki/concepts/METAR.md` — Layer 3 data-source documentation
+- Covers: IEM source, Phase 1 download sizing, pipeline file layout, full 46-column schema (30 IEM-decoded + 16 RMK-decoded), RMK-group decoding examples (SLP/T/1/2/4/5/6/7/PRESRR/PRESFR/TSB/TSE), relationship to Layers 1 / 2 / 6, schema quirks hit (`#DEBUG:` preamble, SPECI RMK omissions, `press_tendency` not a python-metar attribute)
+- Market-relevance shortcuts section: maps each contract shape (daily high/low, rain-today, frontal timing, convective onset, threshold temperature) to the specific column that answers it
+- Index updated under Concepts section
+- Produced in conjunction with `scripts/iem_metar/` Phase 1 pipeline landing (commits 56eed97 + 4355def on `wt/iem-metar-layer3`)
