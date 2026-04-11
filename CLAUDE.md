@@ -99,6 +99,7 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 | CLI framework | **typer** | typed, ergonomic, built on Click |
 | Terminal UX | **rich** + **tqdm** | readable output, progress bars |
 | Structured logging | **structlog** | project convention per `scripts/README.md` |
+| Notebooks | **Marimo** | reactive, git-friendly `.py` files, runs as script or web app — see [Notebooks](#notebooks--marimo-as-first-class-research-surface) |
 
 ### Running things
 
@@ -115,6 +116,42 @@ uv run pyright                # type check
 ```
 
 **Always** use `uv run` to execute Python code — it ensures the right venv is active without needing to `source .venv/bin/activate`.
+
+### Notebooks — Marimo as first-class research surface
+
+**Use [Marimo](https://marimo.io/), not Jupyter.** Marimo notebooks are reactive Python files (`.py`, not JSON) that:
+
+- **Re-run dependent cells automatically** when you edit something — no stale-cell bugs where `cell 4` disagrees with `cell 7` because you ran them out of order
+- **Live as real Python files** — git-friendly diffs, lintable by ruff, type-checkable by pyright, importable from other code
+- **Run as scripts** (`uv run python notebooks/foo.py`) — the reactive DAG just runs top-to-bottom
+- **Run as interactive web apps** (`uv run marimo run notebooks/foo.py`) — shareable dashboards without leaving the notebook file
+- **Edit in the browser** (`uv run marimo edit notebooks/foo.py`) — live-reloading reactive editor
+
+Notebooks live in `notebooks/` at the repo root. Naming conventions, graduation path, and anti-patterns are in [`notebooks/README.md`](notebooks/README.md).
+
+**Commands:**
+
+```sh
+uv run marimo edit notebooks/foo.py    # edit in browser (reactive)
+uv run marimo new notebooks/foo.py     # scaffold a new notebook
+uv run python notebooks/foo.py         # run end-to-end as a script
+uv run marimo run notebooks/foo.py     # serve as an interactive web app
+```
+
+**When to use a notebook:**
+
+- Exploratory data analysis — loading DuckDB or polars over `data/` and poking around
+- Schema discovery on new datasets (e.g. Phase 0 weather-subset filtering against `data/raw/prediction_market_analysis/`)
+- Validation — sanity-checking an alignment, a pipeline output, or a join key
+- Calibration and diagnostic checks on forecasts vs observations
+- Model experimentation before committing to a training script
+- Any "I want to see this" moment where interactivity beats a script
+
+**When NOT to use a notebook:**
+
+- Production pipelines → `scripts/`
+- Reusable utilities → graduate to a module that scripts can import
+- Anything that needs to run unattended on a schedule
 
 ### Code layout philosophy — no forced `src/` dogma
 
@@ -155,6 +192,7 @@ weather/
 │       └── notes/                # hand-written notes
 ├── data/                         # gitignored: raw/ | interim/ | processed/ (see data/README.md)
 ├── scripts/                      # tracked scripts (downloads, one-offs, utilities)
+├── notebooks/                    # Marimo reactive notebooks (research, analysis, validation)
 ├── pyproject.toml                # deps + ruff + pyright + pytest config
 ├── .python-version               # pinned Python (3.13)
 └── .venv/                        # gitignored, managed by uv

@@ -48,6 +48,7 @@ dev = [
     "pytest>=8.3",              # test runner
     "pytest-cov>=6.0",          # coverage
     "ipython>=8.30",            # nicer REPL
+    "marimo>=0.23.1",
 ]
 
 # ------------------------------------------------------------------------------
@@ -84,6 +85,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "scripts/**/*.py" = ["N999"]  # script filenames often aren't valid module names
 "tests/**/*.py" = ["N802"]    # test function names can deviate from pep8
+# Marimo notebooks use bare expressions (e.g. `my_table` on its own line) as
+# the cell display mechanism. Ruff's B018 ("useless expression") flags this.
+# E402 ("module-level import not at top") is common in notebook cells too.
+"notebooks/**/*.py" = ["B018", "E402"]
 
 [tool.ruff.format]
 # Defaults are fine. Run: uv run ruff format .

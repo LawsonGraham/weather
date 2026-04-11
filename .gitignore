@@ -58,6 +58,10 @@ vault/**/.obsidian/workspace
 vault/**/.trash/
 vault/**/.obsidian/cache
 
+# Marimo — notebooks themselves are tracked, but caches / runtime state are not
+__marimo__/
+.marimo.toml
+
 # Claude Code local-only settings (per-machine overrides)
 .claude/settings.local.json
 
