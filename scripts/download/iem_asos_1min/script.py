@@ -44,9 +44,8 @@ Usage::
     uv run python scripts/download/iem_asos_1min/script.py \\
         --stations NYC LGA --start 2025-06-01 --fresh
 
-This script is intentionally **self-contained** — all helpers are inlined,
-no shared utility module.  See ``scripts/download/README.md`` and the
-template in ``scripts/download/prediction_market_analysis/script.py``.
+Self-contained: all helpers inlined, no shared utility module. See
+``.claude/skills/data-script/`` for the canonical pattern and template.
 """
 
 from __future__ import annotations
@@ -128,9 +127,7 @@ def configure_logging() -> None:
 
     class _Fmt(logging.Formatter):
         def formatTime(self, record, datefmt=None):  # noqa: N802
-            return datetime.fromtimestamp(record.created, tz=UTC).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            return datetime.fromtimestamp(record.created, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     fmt = _Fmt("%(asctime)s [%(levelname)s] %(message)s")
     fh = logging.FileHandler(LOG_PATH)
@@ -379,8 +376,7 @@ def _validate(body: bytes, station: str, first: date) -> None:
         raise SystemExit(f"IEM rejected station {station!r}: {head}")
     if not head.startswith(EXPECTED_HEADER_PREFIX):
         raise ValueError(
-            f"unexpected response for {station} {first:%Y-%m}: "
-            f"first bytes = {head[:120]!r}"
+            f"unexpected response for {station} {first:%Y-%m}: first bytes = {head[:120]!r}"
         )
     if len(body.splitlines()) < 2:
         raise ValueError(f"no data rows for {station} {first:%Y-%m} (only header)")

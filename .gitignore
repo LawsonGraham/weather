@@ -25,11 +25,10 @@ env/
 # Node (in case of tooling)
 node_modules/
 
-# Data — never commit raw or derived datasets. We ignore `data/*` (the
-# contents) rather than `data/` (the directory) so that the `!data/README.md`
-# exception actually takes effect — git won't recurse into an ignored dir.
-data/*
-!data/README.md
+# Data — never commit raw or derived datasets. The entire `data/` tree is
+# gitignored; the directory is created at runtime by scripts that write under
+# it (`mkdir -p data/raw/<source>`). No tracked files live under `data/`.
+data/
 *.grib2
 *.grib2.idx
 *.nc

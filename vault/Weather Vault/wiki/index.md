@@ -5,12 +5,13 @@
 ## Entry points
 
 - [[Project Scope]] — canonical scoping doc (top-level, not under `wiki/`)
+- [[Execution Stack — Source Review]] — evaluation of three open-source prediction-market repos and the chosen execution-stack architecture (top-level, not under `wiki/`)
 
 ## Syntheses
 
 _Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest` or promoted from `/ask` queries._
 
-_(none yet — use `/ingest <path>` to add sources)_
+- [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
 
 ## Entities
 

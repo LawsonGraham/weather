@@ -49,16 +49,35 @@ GAMMA_DIR = RAW_DIR / "gamma"
 FILLS_DIR = RAW_DIR / "fills"
 
 REQUIRED_GAMMA_FIELDS = [
-    "slug", "conditionId", "question", "clobTokenIds", "outcomes",
-    "volumeNum", "volumeClob", "bestBid", "bestAsk",
-    "orderPriceMinTickSize", "orderMinSize",
-    "negRisk", "active", "closed", "createdAt", "endDate",
+    "slug",
+    "conditionId",
+    "question",
+    "clobTokenIds",
+    "outcomes",
+    "volumeNum",
+    "volumeClob",
+    "bestBid",
+    "bestAsk",
+    "orderPriceMinTickSize",
+    "orderMinSize",
+    "negRisk",
+    "active",
+    "closed",
+    "createdAt",
+    "endDate",
 ]
 
 REQUIRED_FILL_FIELDS = [
-    "id", "transactionHash", "timestamp", "orderHash",
-    "maker", "taker", "makerAssetId", "takerAssetId",
-    "makerAmountFilled", "takerAmountFilled",
+    "id",
+    "transactionHash",
+    "timestamp",
+    "orderHash",
+    "maker",
+    "taker",
+    "makerAssetId",
+    "takerAssetId",
+    "makerAmountFilled",
+    "takerAmountFilled",
 ]
 
 
@@ -66,8 +85,10 @@ REQUIRED_FILL_FIELDS = [
 # Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 
-def load_selected_slugs(csv_path: Path, *, city: str | None,
-                        explicit: list[str] | None) -> list[dict[str, Any]]:
+
+def load_selected_slugs(
+    csv_path: Path, *, city: str | None, explicit: list[str] | None
+) -> list[dict[str, Any]]:
     if explicit:
         # Return stub rows with just the slug
         return [{"slug": s.strip(), "city": "", "volume_gamma": ""} for s in explicit]
@@ -91,21 +112,21 @@ def parse_fill_price(fill: dict[str, Any], token_id: str) -> tuple[float, float,
     """
     maker_asset = fill["makerAssetId"]
     taker_asset = fill["takerAssetId"]
-    maker_amt   = int(fill["makerAmountFilled"])
-    taker_amt   = int(fill["takerAmountFilled"])
+    maker_amt = int(fill["makerAmountFilled"])
+    taker_amt = int(fill["takerAmountFilled"])
 
     if maker_asset == "0" and taker_asset == token_id:
         # Taker is buying `token_id` with USDC
         if taker_amt == 0:
             return None
-        price  = maker_amt / taker_amt
+        price = maker_amt / taker_amt
         shares = taker_amt / 1e6
         return price, shares, "buy"
     if taker_asset == "0" and maker_asset == token_id:
         # Taker is selling `token_id` for USDC
         if maker_amt == 0:
             return None
-        price  = taker_amt / maker_amt
+        price = taker_amt / maker_amt
         shares = maker_amt / 1e6
         return price, shares, "sell"
     return None  # token ↔ token (rare)
@@ -115,8 +136,10 @@ def parse_fill_price(fill: dict[str, Any], token_id: str) -> tuple[float, float,
 # Checks                                                                      #
 # --------------------------------------------------------------------------- #
 
+
 class Report:
     """Accumulator for human-readable report lines + a pass/fail verdict."""
+
     def __init__(self) -> None:
         self.lines: list[str] = []
         self.failures: list[str] = []
@@ -160,8 +183,10 @@ def check_completeness(r: Report, selected: list[dict[str, Any]]) -> tuple[list[
                 missing_gamma.append(slug)
             if not has_f:
                 missing_fills.append(slug)
-    r.info(f"selected: {len(selected):,}  present: {len(present):,}  "
-           f"missing_gamma: {len(missing_gamma):,}  missing_fills: {len(missing_fills):,}")
+    r.info(
+        f"selected: {len(selected):,}  present: {len(present):,}  "
+        f"missing_gamma: {len(missing_gamma):,}  missing_fills: {len(missing_fills):,}"
+    )
     if not missing_gamma and not missing_fills:
         r.ok("all selected slugs have both gamma + fills files")
     else:
@@ -193,7 +218,7 @@ def check_gamma_schema(r: Report, slugs: list[str]) -> list[dict[str, Any]]:
         for field, n in sorted(missing_fields.items(), key=lambda x: -x[1]):
             r.fail(f"field '{field}' missing in {n} markets")
     neg_risk = sum(1 for m in markets if m.get("negRisk"))
-    r.info(f"negRisk=true:  {neg_risk}/{len(markets)}  ({neg_risk/len(markets):.0%})")
+    r.info(f"negRisk=true:  {neg_risk}/{len(markets)}  ({neg_risk / len(markets):.0%})")
     return markets
 
 
@@ -313,8 +338,10 @@ def check_volume_reconciliation(
         return
     med = statistics.median(ratios)
     mean = statistics.mean(ratios)
-    r.info(f"ratio (reconstructed shares/2 ÷ gamma volumeNum) — "
-           f"median: {med:.3f}  mean: {mean:.3f}  (n={len(ratios)})")
+    r.info(
+        f"ratio (reconstructed shares/2 ÷ gamma volumeNum) — "
+        f"median: {med:.3f}  mean: {mean:.3f}  (n={len(ratios)})"
+    )
     # Anywhere from 0.95 to 1.05 is healthy; wide deviations indicate
     # missing trades or a contract split we don't understand.
     if 0.95 <= med <= 1.05:
@@ -332,6 +359,7 @@ def check_timestamps(
 ) -> None:
     r.section("[7] Fill timestamps fall within market lifetime")
     from datetime import datetime as _dt
+
     violations = 0
     checked = 0
     for m in markets:
@@ -386,17 +414,20 @@ def deep_dive_top_market(
             continue
         prices = [p[0] for p in priced]
         shares = sum(p[1] for p in priced)
-        r.info(f"  {side_name}: {len(priced)} fills,  min=${min(prices):.4f}  "
-               f"avg=${sum(prices)/len(prices):.4f}  max=${max(prices):.4f}  "
-               f"shares={shares:,.0f}")
+        r.info(
+            f"  {side_name}: {len(priced)} fills,  min=${min(prices):.4f}  "
+            f"avg=${sum(prices) / len(prices):.4f}  max=${max(prices):.4f}  "
+            f"shares={shares:,.0f}"
+        )
 
     # First/last fills
     all_slug_fills = [f for toks in all_fills.get(slug, {}).values() for f in toks]
     if all_slug_fills:
         ts = sorted(int(f["timestamp"]) for f in all_slug_fills)
         from datetime import datetime as _dt
+
         first = _dt.fromtimestamp(ts[0]).isoformat()
-        last  = _dt.fromtimestamp(ts[-1]).isoformat()
+        last = _dt.fromtimestamp(ts[-1]).isoformat()
         r.info(f"first fill: {first}   last fill: {last}   (n={len(ts):,})")
 
 
@@ -404,8 +435,9 @@ def deep_dive_top_market(
 # Main                                                                        #
 # --------------------------------------------------------------------------- #
 
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--slugs-file", type=Path, default=DEFAULT_SLUGS_CSV)
     ap.add_argument("--city", help="filter to one city")
     ap.add_argument("--slugs", help="explicit comma-separated slug list")
@@ -419,14 +451,14 @@ def main() -> int:
     r.lines.append(f"selected: {len(selected):,} slugs  (city={args.city!r})")
     r.lines.append(f"raw_dir:  {RAW_DIR.relative_to(REPO_ROOT)}")
 
-    present, missing = check_completeness(r, selected)
+    present, _missing = check_completeness(r, selected)
     if not present:
         r.fail("no present slugs — nothing to validate")
         print(r)
         return 1
 
     markets = check_gamma_schema(r, present)
-    all_fills, total_fills = check_fills_schema(r, present)
+    all_fills, _total_fills = check_fills_schema(r, present)
     check_token_consistency(r, markets, all_fills)
     check_non_empty_fills(r, markets, all_fills)
     check_volume_reconciliation(r, markets, all_fills)

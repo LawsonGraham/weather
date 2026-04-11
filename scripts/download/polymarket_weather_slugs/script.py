@@ -5,9 +5,6 @@ Queries 6 weather tag IDs (Daily Temperature, climate & weather, Hurricane
 Season, Hurricanes, Flood, Snow Storm), pages through closed + open markets,
 dedupes by condition_id, extracts a city field from the question text, and
 writes the result to ``weather-market-slugs/polymarket.csv`` at the repo root.
-
-See scripts/fetch/polymarket_weather_slugs/README.md for the full schema
-and the known historical-coverage limitation.
 """
 
 from __future__ import annotations
@@ -42,9 +39,9 @@ PAGE_DELAY_S = 0.2
 
 WEATHER_TAGS: dict[str, str] = {
     "103040": "Daily Temperature",
-    "1474":   "climate & weather",
+    "1474": "climate & weather",
     "102186": "Hurricane Season",
-    "85":     "Hurricanes",
+    "85": "Hurricanes",
     "102239": "Flood",
     "103235": "Snow Storm",
 }
@@ -69,20 +66,35 @@ _CITY_ALIASES = {
 }
 
 COLS = [
-    "slug", "condition_id", "question", "city", "weather_tags",
-    "volume_gamma", "liquidity_gamma",
-    "best_bid", "best_ask", "spread", "last_trade_price",
-    "order_price_min_tick_size", "order_min_size",
-    "neg_risk", "active", "closed",
-    "created_at", "end_date",
-    "resolution_source", "group_item_title",
-    "clob_token_ids", "outcomes",
+    "slug",
+    "condition_id",
+    "question",
+    "city",
+    "weather_tags",
+    "volume_gamma",
+    "liquidity_gamma",
+    "best_bid",
+    "best_ask",
+    "spread",
+    "last_trade_price",
+    "order_price_min_tick_size",
+    "order_min_size",
+    "neg_risk",
+    "active",
+    "closed",
+    "created_at",
+    "end_date",
+    "resolution_source",
+    "group_item_title",
+    "clob_token_ids",
+    "outcomes",
 ]
 
 
 # --------------------------------------------------------------------------- #
 # HTTP                                                                        #
 # --------------------------------------------------------------------------- #
+
 
 def gamma_get(path: str, **params: Any) -> list[dict[str, Any]]:
     url = f"{GAMMA_BASE}{path}?{urllib.parse.urlencode(params)}"
@@ -102,8 +114,10 @@ def fetch_tag(tag_id: str, *, refresh: bool) -> list[dict[str, Any]]:
         for page in range(MAX_PAGES):
             batch = gamma_get(
                 "/markets",
-                tag_id=tag_id, closed=closed_flag,
-                limit=PAGE_SIZE, offset=page * PAGE_SIZE,
+                tag_id=tag_id,
+                closed=closed_flag,
+                limit=PAGE_SIZE,
+                offset=page * PAGE_SIZE,
             )
             if not batch:
                 break
@@ -120,6 +134,7 @@ def fetch_tag(tag_id: str, *, refresh: bool) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # Row shaping                                                                 #
 # --------------------------------------------------------------------------- #
+
 
 def _pick(m: dict[str, Any], *keys: str) -> Any:
     for k in keys:
@@ -140,28 +155,28 @@ def _city(question: str | None) -> str:
 
 def _row(m: dict[str, Any], tag_labels: list[str]) -> dict[str, Any]:
     return {
-        "slug":                        m.get("slug"),
-        "condition_id":                m.get("conditionId"),
-        "question":                    m.get("question"),
-        "city":                        _city(m.get("question")),
-        "weather_tags":                ",".join(sorted(set(tag_labels))),
-        "volume_gamma":                _pick(m, "volumeNum", "volume"),
-        "liquidity_gamma":             _pick(m, "liquidityNum", "liquidity"),
-        "best_bid":                    m.get("bestBid"),
-        "best_ask":                    m.get("bestAsk"),
-        "spread":                      m.get("spread"),
-        "last_trade_price":            m.get("lastTradePrice"),
-        "order_price_min_tick_size":   m.get("orderPriceMinTickSize"),
-        "order_min_size":              m.get("orderMinSize"),
-        "neg_risk":                    m.get("negRisk"),
-        "active":                      m.get("active"),
-        "closed":                      m.get("closed"),
-        "created_at":                  m.get("createdAt"),
-        "end_date":                    _pick(m, "endDate", "endDateIso"),
-        "resolution_source":           m.get("resolutionSource"),
-        "group_item_title":            m.get("groupItemTitle"),
-        "clob_token_ids":              m.get("clobTokenIds"),
-        "outcomes":                    m.get("outcomes"),
+        "slug": m.get("slug"),
+        "condition_id": m.get("conditionId"),
+        "question": m.get("question"),
+        "city": _city(m.get("question")),
+        "weather_tags": ",".join(sorted(set(tag_labels))),
+        "volume_gamma": _pick(m, "volumeNum", "volume"),
+        "liquidity_gamma": _pick(m, "liquidityNum", "liquidity"),
+        "best_bid": m.get("bestBid"),
+        "best_ask": m.get("bestAsk"),
+        "spread": m.get("spread"),
+        "last_trade_price": m.get("lastTradePrice"),
+        "order_price_min_tick_size": m.get("orderPriceMinTickSize"),
+        "order_min_size": m.get("orderMinSize"),
+        "neg_risk": m.get("negRisk"),
+        "active": m.get("active"),
+        "closed": m.get("closed"),
+        "created_at": m.get("createdAt"),
+        "end_date": _pick(m, "endDate", "endDateIso"),
+        "resolution_source": m.get("resolutionSource"),
+        "group_item_title": m.get("groupItemTitle"),
+        "clob_token_ids": m.get("clobTokenIds"),
+        "outcomes": m.get("outcomes"),
     }
 
 
@@ -169,8 +184,9 @@ def _row(m: dict[str, Any], tag_labels: list[str]) -> dict[str, Any]:
 # Main                                                                        #
 # --------------------------------------------------------------------------- #
 
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--refresh", action="store_true", help="bypass cache, re-hit the Gamma API")
     args = ap.parse_args()
 
@@ -205,7 +221,7 @@ def main() -> int:
     print(f"\nunique markets: {len(df):,}")
 
     # 3. Sort: by combined volume descending; NaN volumes last
-    df["_sort"] = pd.to_numeric(df["volume_gamma"], errors="coerce").fillna(0)
+    df["_sort"] = pd.to_numeric(df["volume_gamma"], errors="coerce").fillna(0)  # pyright: ignore[reportAttributeAccessIssue]
     df = df.sort_values("_sort", ascending=False).drop(columns=["_sort"])[COLS]
 
     # 4. Write CSV
@@ -214,7 +230,7 @@ def main() -> int:
 
     # 5. Stats by city
     print("\ntop 15 cities by market count:")
-    for city, n in df[df["city"] != ""]["city"].value_counts().head(15).items():
+    for city, n in df[df["city"] != ""]["city"].value_counts().head(15).items():  # pyright: ignore[reportAttributeAccessIssue]
         print(f"  {city:<24} {n:>6,}")
     blank_city = int((df["city"] == "").sum())
     print(f"  (blank city)            {blank_city:>6,}")
@@ -224,7 +240,7 @@ def main() -> int:
         "manifest_version": 1,
         "step": "polymarket_weather_slugs",
         "script": {
-            "path": "scripts/fetch/polymarket_weather_slugs/script.py",
+            "path": "scripts/download/polymarket_weather_slugs/script.py",
             "version": SCRIPT_VERSION,
         },
         "source": {
@@ -233,13 +249,13 @@ def main() -> int:
         },
         "output": {
             "csv": str(OUT_CSV.relative_to(REPO_ROOT)),
-            "row_count": int(len(df)),
+            "row_count": len(df),
         },
         "stats": {
             "tags_queried": len(WEATHER_TAGS),
             "raw_markets_total": sum(len(v) for v in tag_raw.values()),
-            "unique_markets": int(len(df)),
-            "cities_distinct": int(df[df["city"] != ""]["city"].nunique()),
+            "unique_markets": len(df),
+            "cities_distinct": int(df[df["city"] != ""]["city"].nunique()),  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue]
         },
         "generated_at": started_at,
     }

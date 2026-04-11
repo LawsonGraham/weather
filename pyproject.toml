@@ -104,6 +104,10 @@ exclude = [
     "data",
     "vault",
     "pipeline-workspace",
+    # Marimo notebooks use bare expressions (e.g. `my_table` on its own line) as
+    # the cell display mechanism. Pyright's reportUnusedExpression flags these.
+    # Notebooks are exploratory — low value in strict type-checking them.
+    "notebooks",
 ]
 typeCheckingMode = "standard"
 # Weather and geoscience libraries frequently lack type stubs. Keep these off

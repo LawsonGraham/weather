@@ -35,8 +35,8 @@ When research, design decisions, failures, or analyses produce durable knowledge
 
 This project is expected to grow significantly (data ingest, models, backtests, live trading). The user has explicitly flagged "don't let this devolve into ad-hoc scripts and scattered data" as a standing preference.
 
-- Before adding a new category of artifact (data, scripts, models, notebooks), propose a folder convention and a README that documents it. Don't just dump files.
-- Scripts should share a skeleton (common logging, idempotency, error handling) rather than each being a one-off.
+- Before adding a new category of artifact (data, scripts, models, notebooks), propose a folder convention and document it in `CLAUDE.md` or a `.claude/skills/<name>/SKILL.md`. **Never via a subdirectory `README.md`** — see the [`minimal-docs`](.claude/skills/minimal-docs/SKILL.md) skill.
+- Every data script follows the canonical contract in [`.claude/skills/data-script/SKILL.md`](.claude/skills/data-script/SKILL.md). Copy `.claude/skills/data-script/template.py`; don't reinvent CLI flags, manifest lifecycle, or logging.
 - For large, slow, or irreversible actions (multi-GB downloads, deleting files, touching shared state): show the plan first, get explicit go-ahead, then act.
 - Extend existing conventions over adding parallel ones.
 
@@ -137,11 +137,12 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 
 ## Data conventions
 
-- Data lives in `data/` which is **gitignored** (`data/*` + `!data/README.md`). See [`data/README.md`](data/README.md) — it is the authoritative source for layout and conventions.
-- Layout: `data/raw/<source>/` (immutable originals with `MANIFEST.json` + `download.log`), `data/interim/<step>/` (cleaned/decoded), `data/processed/<task>/` (model- or backtest-ready artifacts). Never hand-edit `raw/`.
-- Every `raw/<source>/` needs a `MANIFEST.json` (schema in `data/README.md`) and download scripts must be idempotent — check `status: complete` and skip if so.
-- Downloads go through a tracked script under `scripts/download/<source>.sh` that tees stdout to `download.log`.
-- Never commit GRIB2, Parquet, CSV, NetCDF, or other data files — only tracked scripts and the README.
+- Data lives in `data/` which is **gitignored in its entirety**. Layout: `data/raw/<source>/` (immutable originals with `MANIFEST.json` + `download.log`), `data/interim/<step>/` (cleaned / decoded intermediates), `data/processed/<task>/` (model- or backtest-ready artifacts).
+- **Every `data/raw/<source>/` MUST have a `MANIFEST.json` (schema v1).** The canonical schema, idempotency rules, required CLI flags, and full download-script contract live in [`.claude/skills/data-script/SKILL.md`](.claude/skills/data-script/SKILL.md). Copy [`.claude/skills/data-script/template.py`](.claude/skills/data-script/template.py) for every new source — it's the single canonical skeleton.
+- **Never hand-edit anything in `data/raw/`.** If you need a transformation, write a script under `scripts/transform/<step>/` that reads from `raw/` and emits to `data/interim/` or `data/processed/`.
+- **Two-stage pipeline:** `scripts/download/<source>/script.py` → `data/raw/<source>/`; `scripts/transform/<step>/script.py` → `data/{interim,processed}/`. Validators are siblings of the downloader they validate (`scripts/download/<source>/validate.py`), not a separate stage.
+- **Never commit** GRIB2, Parquet, CSV, NetCDF, or other data files — only tracked scripts.
+- **Slug-catalog carveout:** `weather-market-slugs/polymarket.csv` is the one committed CSV exception — small (~8 MB), semi-permanent, source-of-truth identifier list that every downstream script depends on. Kept as plain CSV at the repo root. No separate README.
 - HRRR access via Herbie (`pip install herbie-data`). Byte-range subset, never full-domain downloads.
 - Ground truth from IEM ASOS 1-min (airport station) unless explicitly overridden.
 - **Time-based splits only.** Never random train/test splits — weather has strong autocorrelation and random splits give fraudulent metrics.
@@ -171,7 +172,7 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 | Test runner | **pytest** | standard; `pythonpath = ["."]` lets any top-level folder be importable |
 | CLI framework | **typer** | typed, ergonomic, built on Click |
 | Terminal UX | **rich** + **tqdm** | readable output, progress bars |
-| Structured logging | **structlog** | project convention per `scripts/README.md` |
+| Structured logging | **structlog** (available) / stdlib `logging` (default) | stdlib `logging.Formatter` is the data-script convention; `structlog` when structured JSON context helps |
 | Notebooks | **Marimo** | reactive, git-friendly `.py` files, runs as script or web app — see [Notebooks](#notebooks--marimo-as-first-class-research-surface) |
 
 ### Running things
@@ -200,7 +201,7 @@ uv run pyright                # type check
 - **Run as interactive web apps** (`uv run marimo run notebooks/foo.py`) — shareable dashboards without leaving the notebook file
 - **Edit in the browser** (`uv run marimo edit notebooks/foo.py`) — live-reloading reactive editor
 
-Notebooks live in `notebooks/` at the repo root. Naming conventions, graduation path, and anti-patterns are in [`notebooks/README.md`](notebooks/README.md).
+Notebooks live in `notebooks/` at the repo root. Name them with a category prefix: `expl_` (exploration), `val_` (validation), `calib_` (calibration), `diag_` (diagnostic), `train_` (model experimentation). Graduate to a script under `scripts/` once the notebook runs more than once a week and reactivity is getting in the way.
 
 **Commands:**
 
@@ -233,7 +234,7 @@ This project does NOT have a single monolithic `src/weather/` package. Instead:
 - **Scatter `.py` files across whatever top-level folder makes sense for the job**: `scripts/`, `experiments/`, `analysis/`, `notebooks/`, etc.
 - **The repo root is on `pythonpath`** (via `[tool.pytest.ini_options]` and uv's implicit behavior), so any top-level folder can be imported as a namespace package.
 - **Shared utilities graduate into a small package at the root** (e.g. `weatherlib/` or `common/`) only once they're actually reused — not preemptively.
-- Per `scripts/README.md`: scripts stay in `scripts/` until they graduate into a library. Don't pre-create the library.
+- Data scripts stay in `scripts/download/<source>/` and `scripts/transform/<step>/` until they graduate into a library. Don't pre-create the library.
 
 ### Type hint discipline
 
@@ -245,13 +246,15 @@ This project does NOT have a single monolithic `src/weather/` package. Instead:
 
 ```
 weather/
-├── CLAUDE.md                     # this file
+├── CLAUDE.md                     # this file — project rules
+├── README.md                     # minimal repo entry point
 ├── .claude/
 │   ├── settings.json             # project tool permissions
 │   ├── agents/                   # subagent definitions (vault-scribe, weather-data-expert)
-│   └── skills/                   # skill definitions (vault-*, weather-data, model-training)
+│   └── skills/                   # skill definitions (data-script, minimal-docs, vault-*, ...)
 ├── vault/Weather Vault/          # Obsidian vault — first-class project surface
 │   ├── Project Scope.md          # canonical scoping doc
+│   ├── Execution Stack — Source Review.md   # execution-stack decision doc
 │   ├── wiki/                     # LLM-maintained synthesis (Karpathy pattern)
 │   │   ├── index.md              # catalog
 │   │   ├── log.md                # chronological
@@ -263,9 +266,14 @@ weather/
 │       ├── articles/             # web clippings
 │       ├── papers/               # academic papers
 │       └── notes/                # hand-written notes
-├── data/                         # gitignored: raw/ | interim/ | processed/ (see data/README.md)
-├── scripts/                      # tracked scripts (downloads, one-offs, utilities)
-├── notebooks/                    # Marimo reactive notebooks (research, analysis, validation)
+├── data/                         # gitignored — raw/ | interim/ | processed/
+├── scripts/
+│   ├── download/<source>/        # raw data ingestion → data/raw/<source>/
+│   │   ├── script.py             # REQUIRED
+│   │   └── validate.py           # optional post-run validator
+│   └── transform/<step>/         # raw → data/interim|processed/
+├── notebooks/                    # Marimo reactive notebooks (expl_, val_, calib_, ...)
+├── weather-market-slugs/         # committed slug catalogs (carveout from no-CSV rule)
 ├── pyproject.toml                # deps + ruff + pyright + pytest config
 ├── .python-version               # pinned Python (3.13)
 └── .venv/                        # gitignored, managed by uv
