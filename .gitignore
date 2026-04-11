@@ -65,6 +65,11 @@ __marimo__/
 # Claude Code local-only settings (per-machine overrides)
 .claude/settings.local.json
 
+# Worktree-first coordination — advisory mutex for the main checkout when
+# multiple Claude sessions run in parallel. Pure runtime state; never commit.
+# See CLAUDE.md Rule 8 and .claude/skills/worktree-first/SKILL.md.
+.main-repo-lock
+
 # Pipeline workspace — scratch dir, entire directory ignored for now
 pipeline-workspace/
 

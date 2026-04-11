@@ -104,6 +104,37 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 
 **Override on request:** `/caveman lite` | `/caveman full` | `/caveman ultra` | `stop caveman` | `normal mode`. Default intensity is `full`. Level persists until changed or session end.
 
+### 8. Worktree-first — every session works in a git worktree
+
+**Default to a git worktree for all non-trivial work.** This repo is expected to run parallel Claude sessions, and the worst failure mode is two sessions thrashing on the main checkout at the same time. Worktrees eliminate that: each session gets its own working tree + branch, the `.git/` database is shared, merges happen at the end. The [`worktree-first`](.claude/skills/worktree-first/SKILL.md) skill has the full workflow, commands, and conventions.
+
+**The rule:**
+
+- **Every Claude session that changes files should be working in a worktree**, not the main checkout. Two ways:
+    1. **`Agent` tool with `isolation: "worktree"`** — ephemeral, cleanest for bounded subagent tasks. Claude Code creates + cleans up the worktree automatically.
+    2. **Manual `git worktree add ../weather-wt/<name> -b wt/<name>`** — longer-lived, for work spanning multiple commits. Branch convention: `wt/<purpose>`. Path convention: `../weather-wt/<name>` (sibling to main repo, outside its tree).
+- **Read-only operations** (questions, vault queries, `git log`, lint checks, running tests that don't mutate tracked files) can happen on the main checkout without a lock.
+- **Trivial edits carveout:** single-file changes under ~20 lines, typo fixes, and doc corrections can skip the worktree *if* the `.main-repo-lock` is not held. Anything bigger → worktree.
+
+**When you must use the main checkout — the `.main-repo-lock` file:**
+
+Some operations genuinely need to run against the main checkout (coordinating a merge, cleaning up uncommitted state, something that depends on main-repo working-tree state). In that case:
+
+1. **Check for the lock first:** `cat .main-repo-lock` at repo root. If present → don't touch the main checkout, use a worktree instead.
+2. **Acquire the lock** before doing any main-checkout work:
+   ```sh
+   cat > .main-repo-lock <<EOF
+   {"session": "<short-identifier>", "acquired_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "reason": "<one-line why>"}
+   EOF
+   ```
+3. **Release the lock** (`rm -f .main-repo-lock`) the instant your main-checkout work is done — even on error. Wrap in `trap 'rm -f .main-repo-lock' EXIT` in bash, or a try/finally equivalent elsewhere.
+4. **Lock scope is minimal** — hold it only while actively editing main-checkout files. Release before long operations (downloads, model training, anything > ~1 minute).
+5. **Lock is advisory, not enforced.** It's a coordination hint between cooperating sessions, not a security primitive. Respect other sessions' locks; don't unilaterally steal a stale one — check with the user first.
+
+The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime state, not a repo artifact.
+
+**Default posture:** use a worktree. Lock the main checkout only when you actually cannot.
+
 ## Data conventions
 
 - Data lives in `data/` which is **gitignored** (`data/*` + `!data/README.md`). See [`data/README.md`](data/README.md) — it is the authoritative source for layout and conventions.
