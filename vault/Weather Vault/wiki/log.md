@@ -86,15 +86,15 @@
 - Extended `validate.py` with 7 new fidelity checks: raw CSV ↔ parquet row + column fidelity, null-count parity (detect lost values to cast failure), timestamp parse coverage, report-type mix, inter-observation gap distribution, temp_c ↔ tmpf consistency, slp_mb_rmk ↔ mslp redundancy. All new checks pass against the v3 output.
 - Vault page updated with corrected column semantics, SPECI detection quirk, trace sentinel history, and `_rmk` naming rationale
 
-## [2026-04-11] synthesis | NYC Polymarket intraday sniping backtest — negative result
+## [2026-04-11] capture | NYC Polymarket upward-bias Strategy D (deployable)
 
-- Page: wiki/syntheses/2026-04-11 NYC Polymarket intraday sniping backtest.md
-- Source: `notebooks/expl_nyc_polymarket_backtest.py` (DuckDB-native, on `wt/nyc-polymarket-backtest`)
-- Result: naive ASOS-threshold sniping on [[KLGA]] `tmpf` vs [[Polymarket]] NYC daily-temp "or higher"/"or below" rungs is **not viable**. 57 lock events / 43 days; 5 material ≥10¢ snipes; median fraction-of-gap-closed at 5/15/60m is 0% (noise-dominated). Cleanest case `2026-03-04 48°F or higher`: market ignored two 1-min spikes, reacted to sustained 5-min cross in ~90s, ripped 64¢ → 99¢ in 20s. Market fades sensor noise correctly; reprice latency beats any human.
-- Schema fact captured: NYC daily-temp `end_date` is noon UTC on resolution day, NOT close-of-trading. Fills continue into the afternoon of the target day (e.g. April 3 market had fills until 17:52 UTC April 3). Correction to [[2026-04-11 Polymarket schema corrections]].
-- Bug captured: naive-timestamp timezone pitfall in DuckDB — `"valid(UTC)" AT TIME ZONE 'America/New_York'` converts OUT of the zone on a naive TIMESTAMP; must double-cast via `AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York'`. Was silently shifting day boundaries by 5h.
-- Decision: deprioritize ASOS-based sniping; prioritize HRRR-based pre-cross ladder modeling once HRRR backfill lands. On 2026-03-04 the market was 29¢ at T-1h and 50¢ right before cross — that window is where the edge lives, per [[Project Scope]].
-- Not covered yet: the 423 interior range rungs (knock-in + knock-out structure, carry most of the book), HRRR pre-cross backtest (blocked on HRRR backfill), fees/spread modeling.
-- Entities touched: [[Polymarket]], [[KLGA]], [[KNYC]]
-- Concepts touched: [[ASOS 1-minute]], [[Polymarket weather market catalog]]
-- Contradictions flagged: `end_date` semantics vs natural reading — captured inline in the synthesis page, not as a ⚠️ block because [[2026-04-11 Polymarket schema corrections]] didn't previously make a claim about trading close
+- Page: wiki/syntheses/2026-04-11 NYC Polymarket upward-bias Strategy D.md
+- Trigger: 8-iteration exploration loop on NYC Polymarket daily-temp markets (exp01–exp14 on `wt/nyc-polymarket-backtest`) produced a deployable thesis
+- Headline: 12 EDT favorite's low edge is ~4°F too cold 80% of days. Strategy D buys `fav_lo + 2` bucket, earns +81.59 cum PnL per $1 across 44 bets, hit rate 29.5%, chronological OOS test (+69.79) > train (+11.81). Deploy at 2% Kelly with `p_entry ≥ 0.02` filter after 30-day paper-trade.
+- Entities touched: [[Polymarket]], [[KLGA]], [[IEM]]
+- Concepts touched: [[Polymarket weather market catalog]], [[ASOS 1-minute]], [[METAR]]
+- Companion negative-result: [[2026-04-11 NYC Polymarket intraday sniping backtest]] (cross-ref added to both directions of index; back-ref into the sniping page itself is pending — file not yet on disk at time of capture)
+- Anti-findings recorded: ASOS threshold sniping (no reaction window), paired underdog hedges (miss magnitudes too big), running-max chase (outlier lottery), solo favorite fade (median −$1, strictly worse than Strategy D)
+- Discovered facts recorded: ladder is prob-normalized (no overround), ASOS 1-min LGA has 15°F gaps (use METAR instead), `end_date` is not market close, DuckDB naive-ts timezone gotcha
+- Contradictions flagged: none
+- Blocked on: Exp18 HRRR backfill (~42%) — will test whether HRRR shares the under-forecast bias or is closer to truth (direct alpha vs market)

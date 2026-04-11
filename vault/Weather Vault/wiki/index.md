@@ -11,7 +11,8 @@
 
 _Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
-- [[2026-04-11 NYC Polymarket intraday sniping backtest]] — negative-result backtest: naive ASOS-threshold sniping not viable; market reprices ~90s after a sustained cross; edge lives pre-cross in HRRR forecast quality
+- [[2026-04-11 NYC Polymarket intraday sniping backtest]] — negative-result: ASOS 1-min threshold sniping has no human reaction window (~90s market reprice); paired with positive-result Strategy D
+- [[2026-04-11 NYC Polymarket upward-bias Strategy D]] — deployable strategy: buy `fav_lo + 2` strike at 12 EDT; +81.6 cum PnL per $1 stake across 44 bets, OOS test > train
 - [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
 
 ## Entities
