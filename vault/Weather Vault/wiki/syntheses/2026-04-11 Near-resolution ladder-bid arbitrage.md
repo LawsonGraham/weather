@@ -182,6 +182,94 @@ Prior syntheses:
 - Auto-scale per-leg size based on observed L2 depth
 - Target: $100/day sustained across all NYC+8-city markets
 
+## expO (2026-04-11 even later): CORRECTS expN — 50-second arb + visible taker competition
+
+expN was wrong. The 23:04:28 "1-second blip" was an outlier. The watchman
+accumulated 65 alerts over the next 30 minutes (23:15-23:28 UTC) with a
+very different persistence profile:
+
+```
+23:15:14  sum_bid=1.001
+23:15:15-17  0.991       ← brief dip
+23:15:18  1.011          ← ARB OPEN
+23:15:19  1.011
+...
+23:16:07  1.011          ← 50 CONSECUTIVE seconds above 1.005
+23:16:09  1.001          ← drops
+```
+
+**Arbs persist 30-50 seconds** during active flow periods. Not sub-
+second blips.
+
+### Direct evidence of a live taker running the arb
+
+In the `last_trade_price` stream during the 50-sec window:
+
+```
+23:15:21.089  59f  SELL 7 @ 0.08    ← 10 SELL orders within 50ms
+23:15:21.089  65f  SELL 7 @ 0.003
+23:15:21.089  47-  SELL 7 @ 0.002
+23:15:21.089  61f  SELL 7 @ 0.015
+23:15:21.089  66+  SELL 7 @ 0.005
+23:15:21.089  51f  SELL 7 @ 0.032
+23:15:21.089  49f  SELL 7 @ 0.006
+23:15:21.089  63f  SELL 7 @ 0.007
+23:15:21.089  53f  SELL 7 @ 0.171
+23:15:21.089  55f  SELL 7 @ 0.38
+```
+
+**Someone is already running the ladder-BID arb.** Multi-leg async
+batched orders, 10 sells in 50ms, 7 shares per leg, total receipts
+$4.907. Followed 7 seconds later by 11 NO-token buys at 0.62-0.998
+(probably hedging or covering).
+
+### Revised capacity estimate (CORRECTS expN)
+
+expN's 90% downward revision was based on one 1-second blip. expO
+shows the real pattern: **30-50 second arbs recur in bursts during
+active flow**.
+
+- **Active-flow bursts**: ~60-100 arbs/hour, 30-50s persistence
+- **Quiet periods**: few/none
+- **Average over 4-6 active hours per day**: 20-40 arbs/hour
+- **Per city**: $5-30/day  
+- **8 cities**: $40-240/day
+
+Back in the expJ ballpark, not the expN haircut. **Competition is real**
+— we'd share with the other bot(s) — but 30-50 second windows leave
+plenty of room for a second taker at 3-5 share size.
+
+### MM hypothesis is WRONG
+
+expN's "an active MM holds sum_bid at exactly 1.000" was wrong. Actual
+baseline is sum_bid ≈ 1.001 (1c of overround, which is the MM's spread
+profit), and deviations to 1.011 persist for tens of seconds. The MM
+isn't aggressively arbing their own book — they're letting the overround
+stand.
+
+### Implementation implications
+
+- **Taker model VIABLE**: 30-50s windows are plenty for async multi-leg
+  execution
+- **Multi-leg batched async API is a hard requirement** (sequential won't
+  work; the other bot does 10 sells in 50ms)
+- **Size at 3-5 shares** to stay below the other taker's 7-share floor
+  without competing for the same top-of-bid depth
+- **Passive MM model** still higher theoretical capacity; can build
+  later
+
+### Open questions for next iteration
+
+- Identity of the existing taker bot — batched trade pattern is
+  fingerprintable; maybe traceable via Polygon addresses
+- The 55f and 57f BUY trades at 23:15:20-21 (*before* the multi-leg
+  sells) — are those the arb's entry legs or a separate directional
+  trader?
+- Rate in quiet periods — is 0 alerts/hour the norm for off-peak, or
+  do small bursts happen regularly?
+
+---
+
 ## expN (2026-04-11 later): first live alert revises capacity DOWN — active MM found
 
 The watchman caught its first live alert: **april-12-2026 at 23:04:28 UTC,

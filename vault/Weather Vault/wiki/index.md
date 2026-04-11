@@ -11,7 +11,7 @@
 
 _Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
-- [[2026-04-11 Near-resolution ladder-bid arbitrage]] — ✅ VERIFIED EDGE (capacity revised DOWN): the ladder-bid arb is real, but pre-resolution hours have an active MM correcting deviations in <1s. Real capacity is ~$5-15/day NYC at final-hour-only execution — expN first live alert caught a 1-second arb and discovered the active MM pattern.
+- [[2026-04-11 Near-resolution ladder-bid arbitrage]] — ✅ VERIFIED EDGE (capacity back UP after expO correction): arbs persist 30-50 seconds during active-flow bursts, and direct last_trade_price evidence shows another taker is already running it (10 multi-leg sells in 50ms). Realistic capacity: $5-30/day NYC, $40-240/day at 8 cities. expN's "1-second sub-MM" interpretation was an outlier.
 - [[2026-04-11 Strategy D V1 real-ask cost + pre-entry pump]] — ⚠️ PARTIALLY RETRACTED by expL: the pump is on the FAVORITE (not +2), Strategy D V1 catches a local bottom on the +1 bucket, and V2 at 15:30 EDT is WORSE than V1. Real-ask premium (3-18% above backtest) still holds. NEW: the 18c favorite pump at 15:55 EDT looks HRRR-cycle-driven — potential edge.
 - [[2026-04-11 Real-book replay invalidates sell-pop edge]] — ⚠️ corrects the mean-reversion synthesis below: real taker PnL -7.7c/trade; the midpoint "reversion" was a spread-width artifact. Also surfaced the ladder-bid-sum arb candidate (since verified — see above)
 - [[2026-04-11 Asymmetric mean reversion edge]] — UP moves mean-revert 40% in 10 min, DOWN moves don't; sell-3c-pop at midpoint wins 65% / +1.9c (INVALIDATED for taker execution — see real-book replay synthesis)
