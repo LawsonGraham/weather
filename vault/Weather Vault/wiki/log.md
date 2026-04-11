@@ -68,6 +68,13 @@
 - Index updated under Concepts section
 - Produced in conjunction with `scripts/iem_metar/` Phase 1 pipeline landing (commits 56eed97 + 4355def on `wt/iem-metar-layer3`)
 
+## [2026-04-11] methodology | Data Validation skill + concept page + historical bug record
+
+- Codified the paranoid first-principles audit methodology as `.claude/skills/data-validation/SKILL.md` (reusable procedure) + `wiki/concepts/Data Validation.md` (project memory / rationale / bug record)
+- **Six-level rigor ladder**: (1) manifest & disk, (2) row + column fidelity, (3) value-level fidelity, (4) schema invariants & cross-column consistency, (5) fresh upstream re-fetch, (6) invariant stress tests. Levels 1–4 live in every source's `validate.py`; level 5 runs before a source is called done; level 6 graduates into validate.py on first real bug
+- Historical bug record covers the real findings from the iem_metar + iem_asos_1min Phase 1 audits: ice-accretion trace sentinels, temp_c naming, slp_mb_rmk redundancy, and the IEM half-open-interval boundary bug that levels 1–4 missed entirely
+- Index updated under Concepts
+
 ## [2026-04-11] audit | METAR fidelity audit + v3 transform fixes
 
 - Ran exhaustive raw-CSV ↔ parquet fidelity audit after the Phase 1 land
