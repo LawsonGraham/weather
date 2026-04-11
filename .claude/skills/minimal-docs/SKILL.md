@@ -49,12 +49,12 @@ if path.exists():  # legacy bash run may have left this behind; guard rerun
 
 See the `data-script` skill for the full contract. A new data source is:
 
-1. Copy `.claude/skills/data-script/template.py` to `scripts/<download|transform>/<source>/script.py`
+1. Copy `.claude/skills/data-script/template.py` to `scripts/<source>/download.py` (and/or `transform.py`)
 2. Write a 4–6 line top docstring: what it does, upstream URL, output path, key flags
 3. Fill in source-specific logic
 4. Done. No `<source>/README.md`. No separate architecture doc. Nothing.
 
-Usage question? → `uv run python scripts/download/<source>/script.py --help` is the answer.
+Usage question? → `uv run python scripts/<source>/download.py --help` is the answer.
 
 ## Anti-patterns
 

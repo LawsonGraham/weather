@@ -1,37 +1,42 @@
 ---
 name: data-script
 description: >
-  Canonical contract for every data script in scripts/{download,transform}. Defines
-  the 2-stage architecture, required CLI flags, MANIFEST.json v1 lifecycle, idempotency
-  requirements, logging convention, and the ruff/pyright-clean bar. Every new data
-  source script MUST start from .claude/skills/data-script/template.py and MUST pass
-  the quality bar on commit. Invoke when creating, reviewing, or debugging a data
-  script, or when designing a new data source pipeline.
+  Canonical contract for every data script under scripts/<source>/. Defines the
+  source-first layout (each stage is a file: download.py + transform.py +
+  validate.py), required CLI flags, MANIFEST.json v1 lifecycle, idempotency
+  requirements, logging convention, and the ruff/pyright-clean bar. Every new
+  data source MUST start from .claude/skills/data-script/template.py and MUST
+  pass the quality bar on commit. Invoke when creating, reviewing, or debugging
+  a data script, or when designing a new data source pipeline.
 ---
 
 # Data-script contract
 
-Every script in `scripts/download/` and `scripts/transform/` follows this contract. No exceptions.
+Every script under `scripts/<source>/` follows this contract. No exceptions.
 
-## 2-stage architecture
+## Source-first layout — stages are files, not folders
 
-- **`scripts/download/`** — pull raw data from upstream into `data/raw/<source>/`. This covers catalog discovery (slug/lookup tables — small, infrequent) AND bulk data retrieval (large, batched) — both are "download." Output is immutable.
-- **`scripts/transform/`** — read something under `data/raw/` and produce `data/interim/<step>/` or `data/processed/<task>/`. Always reproducible from `raw/`.
+**One folder per source at `scripts/<source>/`. Each stage is a single file inside.**
 
-**Validators** live alongside the downloader they validate — `scripts/download/<source>/validate.py` is a sibling of `script.py`, not a separate stage.
+- **`download.py`** — pull raw data from upstream into `data/raw/<source>/`. Covers catalog discovery (slug / lookup tables, small + infrequent) AND bulk data retrieval (large, batched) — both are "download." Output is immutable.
+- **`transform.py`** — read from `data/raw/<source>/` and produce `data/interim/<step>/` or `data/processed/<task>/`. Always reproducible from `raw/`.
+- **`validate.py`** — optional post-run sanity check. Can validate either the downloader's output or the transformer's output.
+
+A source may have one, two, or all three stage files. A source folder with just `download.py` is complete — `transform.py` is added when you need to produce `interim/` or `processed/` artifacts, `validate.py` when a downstream stage depends on schema guarantees.
 
 ## File layout per source
 
 ```
-scripts/<stage>/<source>/
-├── script.py          # the script (REQUIRED)
-├── validate.py        # optional post-run validator
-└── <helper>.py        # optional source-specific helpers, only if used by this source
+scripts/<source>/
+├── download.py       # stage 1: upstream → data/raw/<source>/       (required if source exists)
+├── transform.py      # stage 2 (optional): raw → data/{interim,processed}/
+├── validate.py       # optional post-run sanity check
+└── <helper>.py       # optional source-specific helper, only if used by this source
 ```
 
-**No `README.md` in the source subdir** — see the `minimal-docs` skill. The script file is the doc (top docstring + `--help`).
+**No `README.md` in the source folder** — see the `minimal-docs` skill. The script file is the doc (top docstring + `--help`).
 
-**No shared `_common.py`.** Each script is self-contained. This is deliberate — keeps scripts independently reviewable, runnable, and editable by parallel Claude sessions without import-graph collisions.
+**No shared `_common.py`.** Each stage file is self-contained. This is deliberate — keeps scripts independently reviewable, runnable, and editable by parallel Claude sessions without import-graph collisions. Duplicated boilerplate across sources is fine; tight coupling between sources is not.
 
 ## Standard CLI flags
 
@@ -56,7 +61,7 @@ Every download writes `data/raw/<source>/MANIFEST.json`. Every transform writes 
   "source_name": "<source>",
   "description": "one sentence",
   "upstream": {"repo": "...", "url": "..."},
-  "script": {"path": "scripts/<stage>/<source>/script.py", "version": N},
+  "script": {"path": "scripts/<source>/download.py", "version": N},
   "download": {
     "started_at": "ISO UTC",
     "completed_at": "ISO UTC or null",
@@ -126,16 +131,17 @@ No commits land with dirty data scripts. See the pre-commit hook (when it exists
 
 ## When adding a new data source — checklist
 
-1. `mkdir scripts/<stage>/<source>/`
-2. `cp .claude/skills/data-script/template.py scripts/<stage>/<source>/script.py`
+1. `mkdir scripts/<source>/`
+2. `cp .claude/skills/data-script/template.py scripts/<source>/download.py`
 3. Update the top docstring (what / upstream / output / flags — 4-6 lines)
 4. Update the `# --- source metadata ---` block constants
 5. Fill in `do_work()` with the source-specific logic
-6. `uv run ruff check scripts/<stage>/<source>/` → clean
-7. `uv run ruff format scripts/<stage>/<source>/` → clean
-8. `uv run pyright scripts/<stage>/<source>/` → clean
+6. `uv run ruff check scripts/<source>/` → clean
+7. `uv run ruff format scripts/<source>/` → clean
+8. `uv run pyright scripts/<source>/` → clean
 9. Test with `--dry-run` first, then a small real run, then the full run
-10. Commit (in a worktree per Rule 8) with a focused message
+10. If the source needs a transform: `cp .claude/skills/data-script/template.py scripts/<source>/transform.py` (or write fresh — the template is download-shaped) and repeat the flow
+11. Commit (in a worktree per Rule 8) with a focused message
 
 That's it. No README. No separate architecture doc. No "usage" markdown. Script + `--help` covers it all.
 
@@ -145,4 +151,5 @@ That's it. No README. No separate architecture doc. No "usage" markdown. Script 
 - Does my script need a README? No.
 - Should I write a shared helper module? No — self-contained.
 - Can I skip the MANIFEST? No — idempotency and provenance both depend on it.
-- Does this fit `download` or `transform`? If it reads from upstream → `download`. If it reads from `data/raw/` → `transform`.
+- Is this `download.py` or `transform.py`? If it reads from upstream → `download.py`. If it reads from `data/raw/` → `transform.py`.
+- One source, multiple transforms? Rare but allowed — e.g. `transform.py` and `transform_features.py` in the same `scripts/<source>/` folder. Prefer one `transform.py` unless there are genuinely distinct output tasks.

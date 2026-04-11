@@ -28,8 +28,8 @@ Checks performed:
 
 Usage::
 
-    python3 scripts/download/polymarket_weather/validate.py --city "New York City"
-    python3 scripts/download/polymarket_weather/validate.py --slugs slug-a,slug-b
+    uv run python scripts/polymarket_weather/validate.py --city "New York City"
+    uv run python scripts/polymarket_weather/validate.py --slugs slug-a,slug-b
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SLUGS_CSV = REPO_ROOT / "weather-market-slugs" / "polymarket.csv"
 RAW_DIR = REPO_ROOT / "data" / "raw" / "polymarket_weather"
 GAMMA_DIR = RAW_DIR / "gamma"

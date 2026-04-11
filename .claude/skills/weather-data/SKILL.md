@@ -25,13 +25,13 @@ Layer 4 (Synoptic) is deferrable — skip until Phase 3. Layers 1, 2, 3, 6 are t
 
 ### Storage — see `.claude/skills/data-script/SKILL.md` for the canonical contract
 
-- **`data/raw/<source>/`** — immutable originals, one subdir per upstream source. Directory name matches `scripts/download/<source>/`.
+- **`data/raw/<source>/`** — immutable originals, one subdir per upstream source. Directory name matches `scripts/<source>/`.
   - Every `raw/<source>/` must have `MANIFEST.json` (schema v1, in the data-script skill) and a `download.log`.
   - Download scripts must be idempotent: check `MANIFEST.json.download.status` before doing work. Copy `.claude/skills/data-script/template.py` for every new source.
 - **`data/interim/<step>/`** — cleaned, filtered, or decoded intermediates. Organized by transformation step, not by source.
 - **`data/processed/<task>/`** — final model- or backtest-ready artifacts. Organized by downstream task.
 - The whole `data/` tree is gitignored. **Never commit** GRIB2, Parquet, CSV, or NetCDF files.
-- Never hand-edit anything in `raw/`. If you need a transformation, write a script in `scripts/transform/<step>/` that emits to `interim/` or `processed/`.
+- Never hand-edit anything in `raw/`. If you need a transformation, write `scripts/<source>/transform.py` that emits to `data/interim/` or `data/processed/`.
 
 ### Identifiers
 

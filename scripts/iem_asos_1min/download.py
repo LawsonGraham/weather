@@ -28,20 +28,20 @@ Station IDs are IEM's 3-character form (``NYC``, ``LGA``, ``JFK``, ``SFO``,
 
 Usage::
 
-    uv run python scripts/download/iem_asos_1min/script.py \\
+    uv run python scripts/iem_asos_1min/download.py \\
         --stations NYC LGA \\
         --start 2025-06-01 \\
         --end 2026-04-10
 
     # Default --end is today UTC.
-    uv run python scripts/download/iem_asos_1min/script.py --stations LGA --start 2025-06-01
+    uv run python scripts/iem_asos_1min/download.py --stations LGA --start 2025-06-01
 
     # Rewrite every month in the requested range.
-    uv run python scripts/download/iem_asos_1min/script.py \\
+    uv run python scripts/iem_asos_1min/download.py \\
         --stations NYC LGA --start 2025-06-01 --force
 
     # Nuke data/raw/iem_asos_1min/ and re-pull from scratch.
-    uv run python scripts/download/iem_asos_1min/script.py \\
+    uv run python scripts/iem_asos_1min/download.py \\
         --stations NYC LGA --start 2025-06-01 --fresh
 
 Self-contained: all helpers inlined, no shared utility module. See
@@ -103,11 +103,11 @@ USER_AGENT = "weather-repo/iem-asos-1min-downloader (solo research)"
 
 # --- paths ----------------------------------------------------------------- #
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME
 MANIFEST_PATH = RAW_DIR / "MANIFEST.json"
 LOG_PATH = RAW_DIR / "download.log"
-SCRIPT_REL = f"scripts/download/{SOURCE_NAME}/script.py"
+SCRIPT_REL = f"scripts/{SOURCE_NAME}/download.py"
 TARGET_REL = f"data/raw/{SOURCE_NAME}"
 
 log = logging.getLogger(SOURCE_NAME)

@@ -28,7 +28,10 @@ node_modules/
 # Data — never commit raw or derived datasets. The entire `data/` tree is
 # gitignored; the directory is created at runtime by scripts that write under
 # it (`mkdir -p data/raw/<source>`). No tracked files live under `data/`.
-data/
+# Pattern is `data` (no trailing slash) so it also matches the `data` symlink
+# that worktrees create via `ln -sfn "$(pwd)/data" <wt>/data` — see the
+# worktree-first skill for the symlink rule.
+data
 *.grib2
 *.grib2.idx
 *.nc

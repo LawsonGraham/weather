@@ -10,7 +10,7 @@ Start every non-trivial session by reading [vault/Weather Vault/Project Scope.md
 - **CONUS-first.** HRRR covers CONUS only. Shanghai and international markets need a different stack and are out of scope for v1.
 - **Airports-specific.** Models are trained per-airport on that station's ground truth (IEM ASOS 1-min). Local microclimate patterns are where alpha lives.
 - **Real-time pipeline is load-bearing.** Core alpha comes from reacting to new HRRR runs within a 15–45 min window before the market reprices.
-- **Python-first, everywhere.** Every script, data ingest, feature pipeline, model, backtest, analysis, and real-time component in this repo is Python via **`uv`**. The weather (Herbie, xarray, cfgrib, metar, arm-pyart, SynopticPy) and ML (scikit-learn, xgboost, lightgbm, statsmodels) ecosystems are Python-dominant — no TypeScript or Node in this repo. Bash is permitted only for tiny shell-native download/extract flows under `scripts/download/`; anything with real logic, parsing, or data structures goes to Python. See [Language and tooling](#language-and-tooling) for the full stack.
+- **Python-first, everywhere.** Every script, data ingest, feature pipeline, model, backtest, analysis, and real-time component in this repo is Python via **`uv`**. The weather (Herbie, xarray, cfgrib, metar, arm-pyart, SynopticPy) and ML (scikit-learn, xgboost, lightgbm, statsmodels) ecosystems are Python-dominant — no TypeScript or Node in this repo. Bash is permitted only as a `subprocess` invocation from inside a Python script (e.g. shelling out to `aria2c`, `curl`, `zstd`, `tar`) — never as a top-level entry point. See [Language and tooling](#language-and-tooling) for the full stack.
 
 ## How to work in this repo
 
@@ -73,7 +73,7 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 - **No "TODO: remove this later" comments.** Remove it now or don't mention it. Future-you will not find the TODO.
 - **No dead docs.** README, SKILL.md, CLAUDE.md, and vault pages must describe how things *currently* work. If an edit makes a doc section stale, update or delete that section in the same commit as the behavior change. A doc that lies is worse than no doc.
 - **Delete unused imports, functions, variables, and classes as you find them.** Ruff catches most of these — run `uv run ruff check --fix .` after any substantial edit.
-- **When a convention is superseded, scrub references to the old one everywhere.** Grep for it. If the new convention is "downloaders live in `scripts/download/<source>/script.py`", no doc should still mention bash versions at the root.
+- **When a convention is superseded, scrub references to the old one everywhere.** Grep for it. If the new convention is "every data source lives at `scripts/<source>/` with stages as files", no doc should still reference the old `scripts/download/` / `scripts/transform/` layout.
 - **When a skill, subagent, or vault page becomes obsolete, delete it.** Stale skills and agents are strictly worse than no skills — they mislead future sessions.
 
 **The cleanup pass** — run at the end of any non-trivial change:
@@ -157,8 +157,8 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 
 - Data lives in `data/` which is **gitignored in its entirety**. Layout: `data/raw/<source>/` (immutable originals with `MANIFEST.json` + `download.log`), `data/interim/<step>/` (cleaned / decoded intermediates), `data/processed/<task>/` (model- or backtest-ready artifacts).
 - **Every `data/raw/<source>/` MUST have a `MANIFEST.json` (schema v1).** The canonical schema, idempotency rules, required CLI flags, and full download-script contract live in [`.claude/skills/data-script/SKILL.md`](.claude/skills/data-script/SKILL.md). Copy [`.claude/skills/data-script/template.py`](.claude/skills/data-script/template.py) for every new source — it's the single canonical skeleton.
-- **Never hand-edit anything in `data/raw/`.** If you need a transformation, write a script under `scripts/transform/<step>/` that reads from `raw/` and emits to `data/interim/` or `data/processed/`.
-- **Two-stage pipeline:** `scripts/download/<source>/script.py` → `data/raw/<source>/`; `scripts/transform/<step>/script.py` → `data/{interim,processed}/`. Validators are siblings of the downloader they validate (`scripts/download/<source>/validate.py`), not a separate stage.
+- **Never hand-edit anything in `data/raw/`.** If you need a transformation, write `scripts/<source>/transform.py` that reads from `raw/` and emits to `data/interim/` or `data/processed/`.
+- **Source-first layout with stages as files:** every data source is one folder at `scripts/<source>/`. Inside: `download.py` (stage 1, upstream → `data/raw/<source>/`), optional `transform.py` (stage 2, `raw/` → `data/{interim,processed}/`), optional `validate.py` (post-run sanity check). A source may have one, two, or all three stage files. No `scripts/download/` or `scripts/transform/` top-level folders.
 - **Never commit** GRIB2, Parquet, CSV, NetCDF, or other data files — only tracked scripts.
 - **Slug-catalog carveout:** `weather-market-slugs/polymarket.csv` is the one committed CSV exception — small (~8 MB), semi-permanent, source-of-truth identifier list that every downstream script depends on. Kept as plain CSV at the repo root. No separate README.
 - HRRR access via Herbie (`pip install herbie-data`). Byte-range subset, never full-domain downloads.
@@ -252,7 +252,7 @@ This project does NOT have a single monolithic `src/weather/` package. Instead:
 - **Scatter `.py` files across whatever top-level folder makes sense for the job**: `scripts/`, `experiments/`, `analysis/`, `notebooks/`, etc.
 - **The repo root is on `pythonpath`** (via `[tool.pytest.ini_options]` and uv's implicit behavior), so any top-level folder can be imported as a namespace package.
 - **Shared utilities graduate into a small package at the root** (e.g. `weatherlib/` or `common/`) only once they're actually reused — not preemptively.
-- Data scripts stay in `scripts/download/<source>/` and `scripts/transform/<step>/` until they graduate into a library. Don't pre-create the library.
+- Data scripts stay in `scripts/<source>/` until they graduate into a library. Don't pre-create the library.
 
 ### Type hint discipline
 
@@ -285,11 +285,10 @@ weather/
 │       ├── papers/               # academic papers
 │       └── notes/                # hand-written notes
 ├── data/                         # gitignored — raw/ | interim/ | processed/
-├── scripts/
-│   ├── download/<source>/        # raw data ingestion → data/raw/<source>/
-│   │   ├── script.py             # REQUIRED
-│   │   └── validate.py           # optional post-run validator
-│   └── transform/<step>/         # raw → data/interim|processed/
+├── scripts/<source>/             # one folder per source; stages as files inside
+│   ├── download.py               # stage 1: upstream → data/raw/<source>/
+│   ├── transform.py              # stage 2 (optional): raw → data/{interim,processed}/
+│   └── validate.py               # optional post-run sanity check
 ├── notebooks/                    # Marimo reactive notebooks (expl_, val_, calib_, ...)
 ├── weather-market-slugs/         # committed slug catalogs (carveout from no-CSV rule)
 ├── pyproject.toml                # deps + ruff + pyright + pytest config

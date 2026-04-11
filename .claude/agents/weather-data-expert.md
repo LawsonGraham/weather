@@ -72,9 +72,7 @@ Before answering, read:
 ## Repo conventions
 
 - Storage: `data/raw/<source>/` (immutable originals with `MANIFEST.json` + `download.log`), `data/interim/<step>/`, `data/processed/<task>/`. Entire `data/` tree gitignored. Never hand-edit `raw/`.
-- Download scripts live at `scripts/download/<source>/script.py` (Python, self-contained — no shared `_common.py`). See `.claude/skills/data-script/SKILL.md` for the canonical contract: required CLI flags (`--force`, `--fresh`, `--dry-run`, `--verbose`), manifest lifecycle, idempotency gate. Copy `.claude/skills/data-script/template.py` when adding a new source.
-- Transform scripts live at `scripts/transform/<step>/script.py` and consume `data/raw/` → `data/{interim,processed}/`.
-- Optional validators live alongside the downloader they validate: `scripts/download/<source>/validate.py`.
+- Every data source is one folder at `scripts/<source>/` with stages as files: `download.py` (stage 1, upstream → `data/raw/<source>/`), optional `transform.py` (stage 2, `raw/` → `data/{interim,processed}/`), optional `validate.py` (post-run sanity check). Each file is Python, self-contained — no shared `_common.py`. See `.claude/skills/data-script/SKILL.md` for the canonical contract (required CLI flags, manifest lifecycle, idempotency gate); copy `.claude/skills/data-script/template.py` when adding a new source.
 - Station identifiers: ICAO. Timestamps: UTC internally.
 - Libraries: `herbie-data`, `metar`, `xarray`, `cfgrib`, `polars`, `duckdb`.
 

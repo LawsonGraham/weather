@@ -10,14 +10,13 @@ each selected slug, pulls:
 
 Usage::
 
-    python3 scripts/download/polymarket_weather/script.py --city "New York City" --limit 5
-    python3 scripts/download/polymarket_weather/script.py --city "New York City"
-    python3 scripts/download/polymarket_weather/script.py --slugs slug-a,slug-b
-    python3 scripts/download/polymarket_weather/script.py --force
+    uv run python scripts/polymarket_weather/download.py --city "New York City" --limit 5
+    uv run python scripts/polymarket_weather/download.py --city "New York City"
+    uv run python scripts/polymarket_weather/download.py --slugs slug-a,slug-b
+    uv run python scripts/polymarket_weather/download.py --force
 
-See scripts/download/polymarket_weather/README.md for flags and contract.
-
-This script is self-contained — no shared utility module.
+Self-contained — no shared utility module. See .claude/skills/data-script/
+for the canonical contract.
 """
 
 from __future__ import annotations
@@ -58,14 +57,14 @@ GAMMA_DELAY_S = 0.1
 
 # --- paths ----------------------------------------------------------------- #
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SLUGS_CSV = REPO_ROOT / "weather-market-slugs" / "polymarket.csv"
 RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME
 GAMMA_DIR = RAW_DIR / "gamma"
 FILLS_DIR = RAW_DIR / "fills"
 MANIFEST_PATH = RAW_DIR / "MANIFEST.json"
 LOG_PATH = RAW_DIR / "download.log"
-SCRIPT_REL = f"scripts/download/{SOURCE_NAME}/script.py"
+SCRIPT_REL = f"scripts/{SOURCE_NAME}/download.py"
 TARGET_REL = f"data/raw/{SOURCE_NAME}"
 
 log = logging.getLogger(SOURCE_NAME)

@@ -27,7 +27,7 @@ import pandas as pd
 # --------------------------------------------------------------------------- #
 
 SCRIPT_VERSION = 1
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_CSV = REPO_ROOT / "weather-market-slugs" / "polymarket.csv"
 CACHE_DIR = REPO_ROOT / "data" / "interim" / "polymarket_weather_slugs" / "raw_gamma"
 MANIFEST_PATH = REPO_ROOT / "data" / "interim" / "polymarket_weather_slugs" / "MANIFEST.json"
@@ -240,7 +240,7 @@ def main() -> int:
         "manifest_version": 1,
         "step": "polymarket_weather_slugs",
         "script": {
-            "path": "scripts/download/polymarket_weather_slugs/script.py",
+            "path": "scripts/polymarket_weather_slugs/download.py",
             "version": SCRIPT_VERSION,
         },
         "source": {

@@ -76,7 +76,7 @@ ln -sfn "$(pwd)/data" "$WT_PATH/data"             # wt/data → main/data
 
 Three paths, **one** physical directory. Every worktree appears to have its own `data/` folder, but it's a pointer back to the same place. When a script in `weather-wt/foo/` writes to `data/raw/iem_asos_1min/NYC/2026-04.csv`, the filesystem follows the symlink and physically stores the file in `/Users/lawsongraham/git/weather/data/raw/iem_asos_1min/NYC/2026-04.csv`. The script doesn't know or care — it just sees a normal path.
 
-**Why we need it:** scripts compute `REPO_ROOT = Path(__file__).resolve().parents[3]` and then `RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME`. In a worktree, `REPO_ROOT` resolves to the worktree path. Without a symlink, downloads would land inside the worktree (`/path/to/worktree/data/raw/...`) — duplicated per worktree and destroyed when the worktree is removed. With the symlink, the `data/` segment of the path resolves transparently to main's `data/`, so every download physically lands in main's data directory regardless of which worktree ran the script.
+**Why we need it:** scripts compute `REPO_ROOT = Path(__file__).resolve().parents[2]` and then `RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME`. In a worktree, `REPO_ROOT` resolves to the worktree path. Without a symlink, downloads would land inside the worktree (`/path/to/worktree/data/raw/...`) — duplicated per worktree and destroyed when the worktree is removed. With the symlink, the `data/` segment of the path resolves transparently to main's `data/`, so every download physically lands in main's data directory regardless of which worktree ran the script.
 
 **No script changes needed.** Python's file I/O follows symlinks by default. The data-script template doesn't need to know whether it's running in a worktree or the main checkout.
 
@@ -87,7 +87,7 @@ Three paths, **one** physical directory. Every worktree appears to have its own 
 ```sh
 cd "$WT_PATH"
 # make edits, run scripts, commit as usual
-uv run python scripts/download/iem_asos_1min/script.py --stations NYC LGA
+uv run python scripts/iem_asos_1min/download.py --stations NYC LGA
 # ^ this writes to main's data/raw/iem_asos_1min/ via the symlink
 
 git add scripts/ CLAUDE.md

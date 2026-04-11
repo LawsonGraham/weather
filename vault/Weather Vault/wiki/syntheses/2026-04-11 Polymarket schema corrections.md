@@ -6,7 +6,7 @@ related: "[[Project Scope]], [[Execution Stack — Source Review]]"
 
 # Polymarket — schema gotchas and corrections
 
-Notes discovered while building the native `scripts/download/polymarket_weather/` downloader (Gamma API + Goldsky orderbook subgraph). Captures corrections to the upstream `jon-becker/prediction-market-analysis` `docs/SCHEMAS.md` that matter for our weather-markets work.
+Notes discovered while building the native `scripts/polymarket_weather/` downloader (Gamma API + Goldsky orderbook subgraph). Captures corrections to the upstream `jon-becker/prediction-market-analysis` `docs/SCHEMAS.md` that matter for our weather-markets work.
 
 ## Gamma API — `polymarket/markets` table
 
@@ -53,6 +53,6 @@ Weather markets on Polymarket are overwhelmingly **NegRisk CTF Exchange** (verif
 
 ## Source
 
-These corrections were discovered empirically via `pyarrow.parquet.ParquetFile` and live subgraph test queries on 2026-04-10 → 2026-04-11 during the switch from `jon-becker/prediction-market-analysis` as an indirect source to the native Gamma + subgraph pipeline in `scripts/download/polymarket_weather/`.
+These corrections were discovered empirically via `pyarrow.parquet.ParquetFile` and live subgraph test queries on 2026-04-10 → 2026-04-11 during the switch from `jon-becker/prediction-market-analysis` as an indirect source to the native Gamma + subgraph pipeline in `scripts/polymarket_weather/`.
 
 The downstream implications are handled in the active downloader. This page exists so the gotchas are preserved across future sessions without spelunking through the code.

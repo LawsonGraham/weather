@@ -2,7 +2,7 @@
 """Download <source> from <upstream_url> into data/raw/<source>/.
 
 Usage:
-    uv run python scripts/download/<source>/script.py [--force] [--fresh] [--dry-run]
+    uv run python scripts/<source>/download.py [--force] [--fresh] [--dry-run]
 
 Replace the metadata block + do_work() body. Keep the rest unchanged.
 """
@@ -31,7 +31,7 @@ REQUIRED_BINARIES: tuple[str, ...] = ("curl",)
 
 # --- path layout ----------------------------------------------------------- #
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME
 MANIFEST_PATH = RAW_DIR / "MANIFEST.json"
 LOG_PATH = RAW_DIR / "download.log"
@@ -122,7 +122,7 @@ class DownloadManifest(AbstractContextManager):
             "description": DESCRIPTION,
             "upstream": {"repo": UPSTREAM_REPO, "url": UPSTREAM_URL},
             "script": {
-                "path": f"scripts/download/{SOURCE_NAME}/script.py",
+                "path": f"scripts/{SOURCE_NAME}/download.py",
                 "version": SCRIPT_VERSION,
             },
             "download": {

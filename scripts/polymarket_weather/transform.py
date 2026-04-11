@@ -15,7 +15,7 @@ artifacts under ``data/processed/polymarket_weather/``:
 
 Usage:
 
-    python3 scripts/transform/polymarket_weather_parquet/script.py \\
+    uv run python scripts/polymarket_weather/transform.py \\
         --city "New York City" --resolution-seconds 1
 
 Flags:
@@ -39,6 +39,11 @@ Flags:
 Self-contained: all helpers inlined, no shared utility module.  Follows the
 data-script skill contract.
 """
+
+# pandas + pyright false-positive pattern: type narrowing through filtered
+# Series / DataFrame / groupby-reindex gives spurious union-type errors.
+# Silenced for this file only; the code is correct at runtime.
+# pyright: reportAttributeAccessIssue=false, reportReturnType=false, reportArgumentType=false
 
 from __future__ import annotations
 
@@ -67,7 +72,7 @@ REQUIRED_DISK_GIB = 5
 
 # --- paths ----------------------------------------------------------------- #
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME
 GAMMA_DIR = RAW_DIR / "gamma"
 FILLS_DIR = RAW_DIR / "fills"
@@ -118,7 +123,7 @@ def utc_now() -> str:
 def check_preconditions(log: logging.Logger) -> None:
     if not GAMMA_DIR.exists() or not FILLS_DIR.exists():
         raise SystemExit(
-            f"raw input missing: {RAW_DIR}. run scripts/download/polymarket_weather/script.py first."
+            f"raw input missing: {RAW_DIR}. run scripts/polymarket_weather/download.py first."
         )
     if not DEFAULT_SLUGS_CSV.exists():
         raise SystemExit(f"slug catalog missing: {DEFAULT_SLUGS_CSV}")
@@ -167,7 +172,7 @@ class TransformManifest(AbstractContextManager):
             "description": DESCRIPTION,
             "upstream": {"raw_dir": f"data/raw/{SOURCE_NAME}"},
             "script": {
-                "path": f"scripts/transform/{STEP_NAME}/script.py",
+                "path": "scripts/polymarket_weather/transform.py",
                 "version": SCRIPT_VERSION,
             },
             "transform": {
@@ -356,7 +361,9 @@ def build_market_row(slug: str, city: str, weather_tags: str) -> dict[str, Any]:
     m = load_gamma(slug)
     tokens = [str(t) for t in parse_json_list(m.get("clobTokenIds"))]
     outcomes = [str(o) for o in parse_json_list(m.get("outcomes"))]
-    outcome_prices = [float(p) for p in parse_json_list(m.get("outcomePrices")) if p not in (None, "")]
+    outcome_prices = [
+        float(p) for p in parse_json_list(m.get("outcomePrices")) if p not in (None, "")
+    ]
     yes_token = tokens[0] if len(tokens) >= 1 else None
     no_token = tokens[1] if len(tokens) >= 2 else None
     return {
@@ -392,7 +399,9 @@ def build_market_row(slug: str, city: str, weather_tags: str) -> dict[str, Any]:
     }
 
 
-def write_markets(slugs: list[str], slug_meta: dict[str, dict[str, str]], log: logging.Logger) -> int:
+def write_markets(
+    slugs: list[str], slug_meta: dict[str, dict[str, str]], log: logging.Logger
+) -> int:
     rows = [
         build_market_row(slug, slug_meta[slug]["city"], slug_meta[slug]["weather_tags"])
         for slug in slugs
@@ -604,7 +613,10 @@ _PRICES_SCHEMA = pa.schema(
 
 
 def build_prices_for_market(
-    slug: str, market: dict[str, Any], fills_by_token: dict[str, list[dict[str, Any]]], resolution_s: int
+    slug: str,
+    market: dict[str, Any],
+    fills_by_token: dict[str, list[dict[str, Any]]],
+    resolution_s: int,
 ) -> list[dict[str, Any]] | None:
     """Forward-fill YES and NO prices at fixed bucket intervals.
 
@@ -642,7 +654,9 @@ def build_prices_for_market(
                     "usd": price * shares,
                 }
             )
-        return pd.DataFrame(rows).sort_values("ts").reset_index(drop=True) if rows else pd.DataFrame()
+        return (
+            pd.DataFrame(rows).sort_values("ts").reset_index(drop=True) if rows else pd.DataFrame()
+        )
 
     yes_df = side_df(yes_token)
     no_df = side_df(no_token)
@@ -651,8 +665,10 @@ def build_prices_for_market(
 
     # Determine bucket range from first to last fill on any side
     all_ts = pd.concat(
-        [yes_df["ts"] if not yes_df.empty else pd.Series(dtype="datetime64[ns, UTC]"),
-         no_df["ts"] if not no_df.empty else pd.Series(dtype="datetime64[ns, UTC]")],
+        [
+            yes_df["ts"] if not yes_df.empty else pd.Series(dtype="datetime64[ns, UTC]"),
+            no_df["ts"] if not no_df.empty else pd.Series(dtype="datetime64[ns, UTC]"),
+        ],
         ignore_index=True,
     )
     freq = f"{resolution_s}s"
@@ -752,7 +768,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--city", default=None, help="filter slugs by exact city match")
     p.add_argument("--slugs-file", type=Path, default=DEFAULT_SLUGS_CSV)
-    p.add_argument("--slugs", default=None, help="comma-separated slug list (overrides --slugs-file)")
+    p.add_argument(
+        "--slugs", default=None, help="comma-separated slug list (overrides --slugs-file)"
+    )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--resolution-seconds", type=int, default=60)
     p.add_argument("--skip-markets", action="store_true")
@@ -784,9 +802,7 @@ def main() -> int:
                 child.unlink()
 
     explicit = [s.strip() for s in args.slugs.split(",")] if args.slugs else None
-    slugs = select_slugs(
-        args.slugs_file, city=args.city, explicit=explicit, limit=args.limit
-    )
+    slugs = select_slugs(args.slugs_file, city=args.city, explicit=explicit, limit=args.limit)
     log.info(
         "selected: %d slugs (city=%r limit=%s resolution=%ds)",
         len(slugs),
@@ -807,8 +823,12 @@ def main() -> int:
             }
 
     if args.dry_run:
-        log.info("dry-run: would write markets=%s fills=%s prices=%s",
-                 not args.skip_markets, not args.skip_fills, not args.skip_prices)
+        log.info(
+            "dry-run: would write markets=%s fills=%s prices=%s",
+            not args.skip_markets,
+            not args.skip_fills,
+            not args.skip_prices,
+        )
         log.info("dry-run: first 5 slugs: %s", slugs[:5])
         return 0
 
