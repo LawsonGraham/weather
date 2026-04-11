@@ -85,6 +85,25 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 
 **When in doubt: delete.** If a deletion turns out to be premature, `git revert <sha>` or `git show <sha>:path > path` restores it — a cheap round trip. A repo full of fossils is expensive to fix later, and every stale thing makes the next cleanup pass bigger. Default posture: aggressive removal, not cautious accumulation.
 
+### 7. Communicate in caveman-full by default
+
+**Default communication style for this repo is [caveman-full](.claude/skills/caveman/SKILL.md)** — terse, fragment-heavy, ~75% fewer output tokens while keeping full technical accuracy. The canonical ruleset lives in `.claude/skills/caveman/SKILL.md` (vendored from [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman), MIT). Summary:
+
+- **Drop** articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/happy to), hedging.
+- **Fragments OK.** Short synonyms ("big" not "extensive", "fix" not "implement a solution for").
+- **Technical terms exact. Code blocks unchanged. Error messages quoted verbatim.**
+- **Pattern:** `[thing] [action] [reason]. [next step].`
+
+**Auto-clarity exceptions — revert to normal prose for:**
+
+- **Security warnings** and **irreversible / destructive action confirmations** (`git reset --hard`, force push, `rm -rf`, dropping tables, deleting branches)
+- **Multi-step sequences** where fragment order risks misread
+- **User confused** or explicitly asking for more detail
+- **Commit messages, PR descriptions, code comments, vault/wiki content, decision docs, planning docs** — write in normal prose
+- **Data / schema / column definitions** where ambiguity would be costly
+
+**Override on request:** `/caveman lite` | `/caveman full` | `/caveman ultra` | `stop caveman` | `normal mode`. Default intensity is `full`. Level persists until changed or session end.
+
 ## Data conventions
 
 - Data lives in `data/` which is **gitignored** (`data/*` + `!data/README.md`). See [`data/README.md`](data/README.md) — it is the authoritative source for layout and conventions.
