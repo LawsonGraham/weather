@@ -22,5 +22,28 @@
       "Bash(ruff *)",
       "Bash(mypy *)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/vault_health.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/vault_capture_reminder.py"
+          }
+        ]
+      }
+    ]
   }
 }

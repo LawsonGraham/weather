@@ -38,6 +38,13 @@ Two complementary write paths:
 
 **Invoke capture proactively and often.** A session that produces durable knowledge and doesn't write it down has failed at Rule 3 — future sessions will re-derive the same conclusions cold. The knowledge base only compounds if we actually deposit into it.
 
+**Automated reminders (structural enforcement via hooks):**
+
+- **`SessionStart` hook** at `.claude/hooks/vault_health.py` prints a vault-repo alignment report every time a session starts — counts of entities / concepts / syntheses, count of `scripts/<source>/` folders, the gap, and the last `wiki/log.md` entry. You see the backlog immediately and can close it opportunistically as you work.
+- **`PostToolUse` hook** at `.claude/hooks/vault_capture_reminder.py` fires after `Bash` tool calls (targets `git commit` invocations specifically). If the just-committed change touched `scripts/` but nothing under `vault/`, it prints a reminder to capture. Non-blocking — surfaces the reminder in session context without failing anything.
+
+Both hooks are wired in `.claude/settings.json`. They're advisory (always exit 0), never block a session or a commit. Their purpose is to make the vault-repo gap visible so it stays top-of-mind, not to enforce by failure.
+
 ### 4. Build cautiously with clean structure
 
 This project is expected to grow significantly (data ingest, models, backtests, live trading). The user has explicitly flagged "don't let this devolve into ad-hoc scripts and scattered data" as a standing preference.
