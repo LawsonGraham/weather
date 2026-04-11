@@ -1,0 +1,132 @@
+[project]
+name = "weather"
+version = "0.1.0"
+description = "Quantitative trading on weather prediction markets at major US airports"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+
+# Runtime dependencies. Keep lean — add things when you need them, not before.
+# Use `uv add <pkg>` to add, `uv remove <pkg>` to remove. Avoid editing by hand.
+dependencies = [
+    # --- tabular / analytical core ---
+    "polars>=1.20",
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "pyarrow>=18.0",
+    "duckdb>=1.1",
+
+    # --- weather data ---
+    "herbie-data>=2024.8",      # HRRR / GFS / RAP byte-range GRIB2 subset access
+    "xarray>=2024.10",          # gridded data (HRRR / NWP)
+    "cfgrib>=0.9.14",           # xarray GRIB2 backend (bundles eccodes wheels)
+    "metar>=1.11",              # METAR string parser
+
+    # --- HTTP / APIs ---
+    "httpx>=0.28",              # Kalshi / Polymarket / NWS / IEM / etc.
+
+    # --- config / validation ---
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "python-dotenv>=1.0",
+
+    # --- CLI / UX ---
+    "typer>=0.15",              # typed CLI framework
+    "rich>=13.9",               # terminal rendering
+    "tqdm>=4.67",               # progress bars
+
+    # --- logging ---
+    "structlog>=24.4",          # structured logging
+]
+
+# Dev-only dependencies. Installed with `uv sync` by default.
+# These are NOT in `dependencies` so they don't ship to prod.
+[dependency-groups]
+dev = [
+    "ruff>=0.8",                # linter + formatter
+    "pyright>=1.1.385",         # static type checker
+    "pytest>=8.3",              # test runner
+    "pytest-cov>=6.0",          # coverage
+    "ipython>=8.30",            # nicer REPL
+]
+
+# ------------------------------------------------------------------------------
+# Tool configuration
+# ------------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [
+    "data",
+    "vault",
+    "pipeline-workspace",
+    ".venv",
+]
+
+[tool.ruff.lint]
+# A conservative-but-useful starter set. Widen as you feel the need.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "N",    # pep8-naming
+    "UP",   # pyupgrade (modern syntax)
+    "B",    # bugbear (likely-bug lint)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",  # line too long — let the formatter handle it
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**/*.py" = ["N999"]  # script filenames often aren't valid module names
+"tests/**/*.py" = ["N802"]    # test function names can deviate from pep8
+
+[tool.ruff.format]
+# Defaults are fine. Run: uv run ruff format .
+
+# ------------------------------------------------------------------------------
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["**/*.py"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "data",
+    "vault",
+    "pipeline-workspace",
+]
+typeCheckingMode = "standard"
+# Weather and geoscience libraries frequently lack type stubs. Keep these off
+# so the type checker doesn't drown you in "unknown member" noise from Herbie,
+# xarray, cfgrib, etc. Tighten per-file as needed.
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportMissingImports = true
+reportMissingModuleSource = false
+
+# ------------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]              # repo root is importable — lets any top-level
+                                # folder act as a namespace package
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+
+# ------------------------------------------------------------------------------
+
+[tool.uv]
+# Nothing to override for now — defaults are fine. If you later want to pin
+# an index URL, set `index-url` here. If you want uv to manage Python itself,
+# it already does: `uv python install 3.13` / pinned via `.python-version`.

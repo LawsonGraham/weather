@@ -59,6 +59,55 @@ This project is expected to grow significantly (data ingest, models, backtests, 
 - HRRR ensemble (HRRRx, 36 members) provides a free empirical distribution — use it.
 - See `.claude/skills/model-training/SKILL.md` for the full conventions.
 
+## Language and tooling
+
+**Python is the primary language for this project.** The weather and ML ecosystems are Python-first — Herbie (HRRR), xarray/cfgrib (GRIB2), metar, arm-pyart (NEXRAD), SynopticPy, scikit-learn, xgboost, lightgbm, statsmodels are all Python-only or Python-dominant. Committing to Python removes an entire class of subprocess-bridge headaches.
+
+### The stack
+
+| Concern | Tool | Why |
+|---|---|---|
+| Package manager + venv | **uv** | fast, unified, handles Python toolchain too |
+| Python version | **3.13** (pinned via `.python-version`) | latest stable during project start; uv can install it |
+| Project config | **`pyproject.toml`** | single source of truth for deps, ruff, pyright, pytest, uv |
+| Linter + formatter | **ruff** | one tool, fast, replaces flake8/black/isort |
+| Static type checker | **pyright** | strict mode available; pragmatic defaults for weather libs w/o stubs |
+| Test runner | **pytest** | standard; `pythonpath = ["."]` lets any top-level folder be importable |
+| CLI framework | **typer** | typed, ergonomic, built on Click |
+| Terminal UX | **rich** + **tqdm** | readable output, progress bars |
+| Structured logging | **structlog** | project convention per `scripts/README.md` |
+
+### Running things
+
+```sh
+uv sync                       # create .venv and install deps (run once, or after pyproject.toml changes)
+uv add <pkg>                  # add a runtime dep to pyproject.toml and install
+uv add --group dev <pkg>      # add a dev dep
+uv remove <pkg>                # remove
+uv run python scripts/foo.py  # run a script
+uv run pytest                 # run tests
+uv run ruff check .           # lint
+uv run ruff format .          # format
+uv run pyright                # type check
+```
+
+**Always** use `uv run` to execute Python code — it ensures the right venv is active without needing to `source .venv/bin/activate`.
+
+### Code layout philosophy — no forced `src/` dogma
+
+This project does NOT have a single monolithic `src/weather/` package. Instead:
+
+- **Scatter `.py` files across whatever top-level folder makes sense for the job**: `scripts/`, `experiments/`, `analysis/`, `notebooks/`, etc.
+- **The repo root is on `pythonpath`** (via `[tool.pytest.ini_options]` and uv's implicit behavior), so any top-level folder can be imported as a namespace package.
+- **Shared utilities graduate into a small package at the root** (e.g. `weatherlib/` or `common/`) only once they're actually reused — not preemptively.
+- Per `scripts/README.md`: scripts stay in `scripts/` until they graduate into a library. Don't pre-create the library.
+
+### Type hint discipline
+
+- **Use type hints on public functions and module-level APIs.** Leave obvious-trivial locals untyped.
+- `pyright` is configured in `standard` mode with unknown-member/argument noise silenced for weather libraries. Tighten per-file with `# pyright: strict` at the top of files you want held to a higher bar.
+- If you import a weather library and pyright complains about missing stubs, do not add ignores everywhere — just keep the pragmatic global setting.
+
 ## Directory layout
 
 ```
@@ -83,7 +132,9 @@ weather/
 │       └── notes/                # hand-written notes
 ├── data/                         # gitignored: raw/ | interim/ | processed/ (see data/README.md)
 ├── scripts/                      # tracked scripts (downloads, one-offs, utilities)
-└── src/weather/                  # Python package (to be created)
+├── pyproject.toml                # deps + ruff + pyright + pytest config
+├── .python-version               # pinned Python (3.13)
+└── .venv/                        # gitignored, managed by uv
 ```
 
 ## Safety

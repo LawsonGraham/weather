@@ -45,13 +45,17 @@ Layer 4 (Synoptic) is deferrable — skip until Phase 3. Layers 1, 2, 3, 6 are t
 - **Strictly causal**: no observation from `t >= valid_time` may leak into features predicting the observation at `valid_time`.
 - Use `init_time` as the "as-of" reference when constructing feature sets — whatever was known at `init_time` is fair game; anything after is leakage.
 
-### Recommended libraries
+### Recommended libraries (add with `uv add <pkg>`)
 
 - `herbie-data` — HRRR/GFS GRIB2 subset access via byte-range (don't reinvent)
 - `metar` — METAR string parsing
-- `xarray` + `cfgrib` — gridded data
-- `polars` or `pandas` — tabular data
+- `xarray` + `cfgrib` — gridded data (cfgrib bundles eccodes wheels on macOS)
+- `polars` (preferred) or `pandas` — tabular data
 - `duckdb` — local analytical queries over Parquet
+- `nexradaws` + `arm-pyart` — NEXRAD (Phase 4, not yet)
+- `SynopticPy` — Synoptic API (Phase 3, not yet; paid)
+
+All already declared in `pyproject.toml` except the Phase 3/4 ones — add those with `uv add <pkg>` when you get to those phases.
 
 ## Pitfalls
 
