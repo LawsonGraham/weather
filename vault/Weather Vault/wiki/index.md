@@ -12,7 +12,7 @@
 _Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
 - [[2026-04-11 Near-resolution ladder-bid arbitrage]] — ✅ FIRST VERIFIED EDGE: near-resolution arb on the bid side of NYC daily-temp ladders; 22 occurrences in 65 min of data, $0.04-0.22 risk-free per cycle, queued for priority-0 implementation
-- [[2026-04-11 Strategy D V1 real-ask cost + pre-entry pump]] — Strategy D V1 real-ask premium is 3-18% above backtest; NEW finding: the +2 bucket PUMPS 2× between 15:24-16:00 EDT on active days then collapses. Strategy D V2 (15:30 EDT entry) candidate.
+- [[2026-04-11 Strategy D V1 real-ask cost + pre-entry pump]] — ⚠️ PARTIALLY RETRACTED by expL: the pump is on the FAVORITE (not +2), Strategy D V1 catches a local bottom on the +1 bucket, and V2 at 15:30 EDT is WORSE than V1. Real-ask premium (3-18% above backtest) still holds. NEW: the 18c favorite pump at 15:55 EDT looks HRRR-cycle-driven — potential edge.
 - [[2026-04-11 Real-book replay invalidates sell-pop edge]] — ⚠️ corrects the mean-reversion synthesis below: real taker PnL -7.7c/trade; the midpoint "reversion" was a spread-width artifact. Also surfaced the ladder-bid-sum arb candidate (since verified — see above)
 - [[2026-04-11 Asymmetric mean reversion edge]] — UP moves mean-revert 40% in 10 min, DOWN moves don't; sell-3c-pop at midpoint wins 65% / +1.9c (INVALIDATED for taker execution — see real-book replay synthesis)
 - [[2026-04-11 First pass 1-min price data exploration]] — first exploratory pass on the brand-new 1-min Polymarket price data: ladder overround structure, volatility concentration, evening-before-resolution info peak, three candidate naive edges

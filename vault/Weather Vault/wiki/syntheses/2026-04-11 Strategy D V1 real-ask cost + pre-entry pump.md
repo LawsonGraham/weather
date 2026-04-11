@@ -6,6 +6,48 @@ related: "[[2026-04-11 Near-resolution ladder-bid arbitrage]], [[2026-04-11 Real
 
 # Strategy D V1 real-ask cost + pre-16-EDT pump (2026-04-11)
 
+## ⚠️ PARTIALLY RETRACTED BY expL (2026-04-11 later)
+
+Exp L re-checked the per-minute price path of the april-11 ladder and
+found that this synthesis misidentified which bucket was pumping.
+
+**What was wrong**: I claimed the +2 bucket (conflated with 64-65°F)
+pumped from 0.07 at 15:24 EDT to 0.15 at 16:00 EDT. That wasn't the
+Strategy D target bucket. The actual Strategy D V1 target is lo_f+2
+= 62 (the 62-63°F bucket). The 62-63°F bucket **DECLINED** from 0.384
+at 19:24 UTC to a local minimum 0.127 at 20:00 UTC, then partially
+recovered to 0.16.
+
+**What's actually happening**: the **FAVORITE** (60-61°F) pumped 18
+cents in 5 minutes at 19:55-20:00 UTC (0.688 → 0.869). That's the
+information event. Mass flowed OUT of the +1 bucket INTO the favorite,
+hitting its local minimum exactly at the Strategy D V1 entry time.
+
+**Consequences**:
+
+- **Strategy D V1 at 16 EDT is catching a local bottom, not a pump.**
+  The entry timing is actually favorable.
+- **Strategy D V2 at 15:30 EDT is WORSE** than V1 (not better) because
+  the +1 bucket is at 0.369 at 15:30 vs 0.127 at 16:00. V2 rejected.
+- **Strategy D V3 at 16:30 EDT is the new candidate** — the +1 bucket
+  drifts further toward 0.08-0.11 in the 30 minutes post-V1-entry.
+  Cheaper per share → higher ROI if it wins, smaller loss if it fails.
+  Needs multi-day backtest.
+- **NEW edge hypothesis**: the 18-cent favorite pump at 15:55 EDT
+  looks like a scheduled reaction to the HRRR 12 UTC cycle. If the
+  timing is reliably pinned to HRRR refresh latency, we could
+  anticipate-buy the favorite pre-pump.
+
+The real-ask premium claim (7-18% above backtest) still holds — that
+was separate per-slug snapshot data and isn't affected by the
+correction. **Strategy D V1 backtested PnL is still down-revised by
+4-9% due to real-ask costs.**
+
+See `expL_NOTES.md` for the corrected minute-by-minute path and full
+reasoning.
+
+---
+
 ## Two findings, one inspiring a Strategy D V2
 
 ### 1. Real-ask premium above backtest assumption
