@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(ls *)",
+      "Bash(tree *)",
+      "Bash(pwd)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch)",
+      "Bash(git branch *)",
+      "Bash(mkdir -p pipeline-workspace/*)",
+      "Bash(mkdir -p data/*)",
+      "Bash(uv run *)",
+      "Bash(uv sync *)",
+      "Bash(python -m *)",
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)"
+    ]
+  }
+}

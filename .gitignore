@@ -1,0 +1,76 @@
+# Secrets / env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (in case of tooling)
+node_modules/
+
+# Data — never commit raw or derived datasets. We ignore `data/*` (the
+# contents) rather than `data/` (the directory) so that the `!data/README.md`
+# exception actually takes effect — git won't recurse into an ignored dir.
+data/*
+!data/README.md
+*.grib2
+*.grib2.idx
+*.nc
+*.zarr/
+*.parquet
+*.csv.gz
+*.feather
+
+# Model artifacts
+models/
+*.pkl
+*.joblib
+*.onnx
+*.pt
+*.bin
+
+# Logs / local runs
+logs/
+*.log
+mlruns/
+wandb/
+
+# Obsidian — keep notes, ignore per-user workspace state
+vault/**/.obsidian/workspace*.json
+vault/**/.obsidian/workspace
+vault/**/.trash/
+vault/**/.obsidian/cache
+
+# Claude Code local-only settings (per-machine overrides)
+.claude/settings.local.json
+
+# Pipeline workspace — scratch dir, entire directory ignored for now
+pipeline-workspace/
+
+# Local-only scaffolding for the 4-role coding pipeline (architect /
+# implementer / reviewer / tester). Kept on disk for experimentation
+# but intentionally NOT committed — the user hasn't locked in a
+# coding-pipeline structure yet. Re-evaluate and commit if/when the
+# pattern settles.
+.claude/agents/architect.md
+.claude/agents/implementer.md
+.claude/agents/reviewer.md
+.claude/agents/tester.md
+.claude/skills/pipeline/

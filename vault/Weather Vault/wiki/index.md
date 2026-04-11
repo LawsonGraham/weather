@@ -1,0 +1,32 @@
+# Wiki Index
+
+> Catalog of every page in the wiki. Organized by type, with a one-line description each. Updated by the `vault-scribe` subagent on every ingest; read first by the `vault-seed` and `vault-query` skills.
+
+## Entry points
+
+- [[Project Scope]] — canonical scoping doc (top-level, not under `wiki/`)
+
+## Syntheses
+
+_Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest` or promoted from `/ask` queries._
+
+_(none yet — use `/ingest <path>` to add sources)_
+
+## Entities
+
+_Named things that matter to the project: airports, markets, providers, competitors, models. Live in `wiki/entities/`._
+
+_(none yet)_
+
+## Concepts
+
+_Ideas and methods: HRRR, MOS, TAF, calibration, Kelly sizing, ensemble spread, and so on. Live in `wiki/concepts/`._
+
+_(none yet)_
+
+## How this index works
+
+- Every wiki page must be linked here. If a page isn't in the index, it's effectively orphaned and `vault-lint` will flag it.
+- Each entry: `- [[path/to/page]] — one-line description`
+- Keep entries alphabetical within each section.
+- `vault-scribe` maintains this file automatically on ingest. Don't edit by hand unless fixing errors.
