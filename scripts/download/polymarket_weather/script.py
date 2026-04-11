@@ -51,7 +51,8 @@ SUBGRAPH_URL = (
 )
 
 REQUEST_TIMEOUT_S = 30
-SUBGRAPH_PAGE_SIZE = 1000
+SUBGRAPH_PAGE_SIZE = 1000           # initial page size
+SUBGRAPH_MIN_PAGE_SIZE = 50         # give up below this
 SUBGRAPH_DELAY_S = 0.1
 GAMMA_DELAY_S = 0.1
 
@@ -236,27 +237,59 @@ query Fills($tokenId: String!, $first: Int!, $skip: Int!) {
 """
 
 
+def _is_statement_timeout(errors: Any) -> bool:
+    """Detect Goldsky subgraph Postgres statement-timeout errors in the
+    GraphQL `errors` payload.  The upstream indexer backs onto Postgres and
+    aborts slow queries with ``canceling statement due to statement timeout``.
+    """
+    text = str(errors).lower()
+    return "statement timeout" in text or "canceling statement" in text
+
+
 def fetch_subgraph_fills(token_id: str) -> list[dict[str, Any]]:
-    """Paginate all OrderFilled events for a single token ID."""
+    """Paginate all OrderFilled events for a single token ID.
+
+    On statement-timeout errors, halves the page size and retries the same
+    offset.  Gives up entirely once page size drops below
+    ``SUBGRAPH_MIN_PAGE_SIZE``.  Any other query-level errors are fatal.
+    """
     out: list[dict[str, Any]] = []
     skip = 0
+    page_size = SUBGRAPH_PAGE_SIZE
     while True:
         resp = _http_post_json(
             SUBGRAPH_URL,
             {
                 "query": _SUBGRAPH_QUERY,
-                "variables": {"tokenId": token_id, "first": SUBGRAPH_PAGE_SIZE, "skip": skip},
+                "variables": {"tokenId": token_id, "first": page_size, "skip": skip},
             },
         )
         if "errors" in resp:
-            raise RuntimeError(f"subgraph errors: {resp['errors']}")
+            errs = resp["errors"]
+            if _is_statement_timeout(errs):
+                if page_size > SUBGRAPH_MIN_PAGE_SIZE:
+                    new_size = max(SUBGRAPH_MIN_PAGE_SIZE, page_size // 2)
+                    log.warning(
+                        "subgraph statement timeout at token=%s skip=%d "
+                        "first=%d → retrying with first=%d",
+                        token_id[:20], skip, page_size, new_size,
+                    )
+                    page_size = new_size
+                    time.sleep(SUBGRAPH_DELAY_S)
+                    continue
+                raise RuntimeError(
+                    f"subgraph statement timeout even at page_size="
+                    f"{page_size} (token={token_id[:20]}..., skip={skip})"
+                )
+            raise RuntimeError(f"subgraph errors: {errs}")
+
         batch = resp.get("data", {}).get("orderFilledEvents", []) or []
         if not batch:
             break
         out.extend(batch)
-        if len(batch) < SUBGRAPH_PAGE_SIZE:
+        if len(batch) < page_size:
             break
-        skip += SUBGRAPH_PAGE_SIZE
+        skip += page_size
         time.sleep(SUBGRAPH_DELAY_S)
     return out
 
