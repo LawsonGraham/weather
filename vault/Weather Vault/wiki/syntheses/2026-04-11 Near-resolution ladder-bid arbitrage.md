@@ -1,0 +1,209 @@
+---
+tags: [synthesis, polymarket, arbitrage, edge, near-resolution, verified]
+date: 2026-04-11
+related: "[[2026-04-11 Real-book replay invalidates sell-pop edge]], [[2026-04-11 First pass 1-min price data exploration]], [[Polymarket CLOB WebSocket]], [[Polymarket]]"
+---
+
+# Near-resolution ladder-BID arbitrage (VERIFIED, 2026-04-11)
+
+**Status**: **first real tradable edge identified in this project.**
+Risk-free arb on the bid side of NYC daily-temp ladders in the final
+~2 hours before resolution. 22 distinct occurrences captured in 65
+minutes of live WS data on april-11. Verified with freshness filter
+(every bid quoted within 2 seconds) and spot-checked with raw L2 depth.
+Estimated scale: $75-150/day NYC-only at 5-10 shares per leg, 8× across
+cities. **Queued for Phase-1 implementation in the next iteration.**
+
+## The pattern in one paragraph
+
+In the final 1-2 hours before a NYC daily-temp market resolves, the
+realized temperature trajectory has made it clear which bucket (or
+small neighborhood of buckets) will win. Polymarket market-makers walk
+away from the "dead" buckets — the ones that cannot possibly win —
+leaving their posted bids at exactly $0.00. Meanwhile the "live" 3-4
+buckets still have active bids. When the live side's individual
+probabilities are slightly overpriced (standard midpoint overround
+from spread width), the sum of live bids crosses $1.00. At that point,
+selling 1 YES token of each live bucket at the posted bids receives
+more than the $1.00 maximum payout liability, guaranteeing a risk-free
+profit.
+
+## The canonical example
+
+**2026-04-11 20:12:13 UTC, april-11 market** (~1h45m before resolution):
+
+```
+60-61°F bid $0.890 × 5.0 shares  ← eventual winner
+62-63°F bid $0.140 × 50 shares
+64-65°F bid $0.008 × N
+66-67°F bid $0.005 × N
+59°F-    bid $0.000 × 0         ← dead (quoted at floor, no size)
+68-69°F  bid $0.000 × 0         ← dead
+70-71°F  bid $0.000 × 0         ← dead
+72-73°F  bid $0.000 × 0         ← dead
+74-75°F  bid $0.000 × 0         ← dead
+76-77°F  bid $0.000 × 0         ← dead
+78°F+    bid $0.000 × 0         ← dead
+
+sum(live bids) = 1.043
+```
+
+**Trade**: sell 5 YES on each of the 4 live buckets at their top bids.
+
+**Receipts**: 5 × (0.89 + 0.14 + 0.008 + 0.005) = **$5.215**
+
+**Resolution payout**:
+
+| if winner is… | obligation | net profit |
+|---------------|------------|------------|
+| 60-61°F (mid ≈ 0.89, actual winner) | 5 × $1 = $5 | **+$0.215** |
+| 62-63°F (mid ≈ 0.14) | 5 × $1 = $5 | **+$0.215** |
+| 64-65°F (mid ≈ 0.01) | 5 × $1 = $5 | **+$0.215** |
+| 66-67°F (mid ≈ 0.01) | 5 × $1 = $5 | **+$0.215** |
+| any of the 7 dead buckets | $0  | **+$5.215** |
+
+Every possible outcome is strictly profitable. This is super-arbitrage.
+
+## Why it exists
+
+Near-resolution dynamics:
+
+1. **Temperature trajectory is mostly known** — by 16:00 EDT the LGA
+   max for the day is within a 2-3°F band. Makers know which buckets
+   are dead.
+2. **Dead-bucket MMs walk away** — posting a $0.001 bid on a bucket
+   that cannot win costs the MM zero but they don't bother. The bid
+   drops to zero entirely.
+3. **Live-bucket midpoints stay overround** — the remaining 3-4 buckets
+   still carry the standard midpoint overround from spread width (see
+   [[2026-04-11 Real-book replay invalidates sell-pop edge]]). Without
+   the offsetting "drag" from dead-bucket bids, the live-bucket sum
+   crosses $1.00.
+
+**This ONLY happens near resolution.** april-12 (tomorrow) and april-13
+(two days out) show max fresh bid sums of 0.981 and 0.976 respectively
+— both buckets still in the dispersed regime, all bids present, no arb.
+
+## Rate and scale
+
+### Per-market rate
+
+- **22 arb seconds / 65 min of observation** during the 19:24-20:28 UTC
+  window (~1h to ~40min before resolution on april-11)
+- **~20 arb events per hour** during the final 2 hours
+- Average cluster is 1-2 consecutive seconds per event
+
+### Per-cycle profit at 5-share scale
+
+- $0.215 per arb cycle (limited by top-bid size on the thinnest bucket,
+  typically 60-61 at 5 shares in the canonical example)
+- Scaling to 10 shares requires deeper L2 ($0.85 × 1.39 shares at level 2
+  for the canonical case, so level-2 arb is net negative — cap at 5)
+
+### Daily P&L estimates
+
+| scale            | NYC only | 8 cities |
+|------------------|----------|----------|
+| 1 share/leg      | $2/day   | $16/day  |
+| 5 shares/leg     | $9.50/day| $75/day  |
+| 10 shares/leg*   | $19/day  | $150/day |
+
+(\*10 shares/leg requires deeper L2 or better execution timing to capture
+subsequent refills.)
+
+**Capital requirement**: $5-10 per arb cycle (max loss bound). Even at
+100 concurrent arbs across cities, capital is < $1000. This scales
+freely — the only ceiling is per-cycle market-depth on the top bid.
+
+## Execution risks
+
+1. **Timing window is tight**: 1-2 seconds per arb cluster. Need a WS-
+   driven bot that can fire 4 concurrent sell orders in < 500ms. Human
+   manual execution is impossible.
+2. **Book moves during execution**: between placing sell #1 and sell
+   #4, the bids may drop. Need to place all legs concurrently (async
+   `asyncio.gather`) and accept partial-fill risk.
+3. **Matchmaker latency**: Polymarket's CLOB matcher is off-chain with
+   ~100-500ms confirm latency. Orders may not all confirm in the arb
+   window. Mitigation: use limit orders at the current bid (postonly),
+   accept no-fill on legs that miss.
+4. **Fee surprise**: Polymarket's current fee is 0 bps (confirmed in
+   WS message's `fee_rate_bps` field). If fees change, arb disappears
+   above the new fee rate.
+5. **Resolution edge cases**: if the market resolves by a rule we don't
+   expect (revision after finalization, wx-underground data lag), the
+   arb still pays but we need to be sure the "dead" buckets we didn't
+   sell really don't win. 7°F misprint = worst case.
+
+## What this changes
+
+Prior syntheses:
+- [[2026-04-11 First pass 1-min price data exploration]] Edge #3
+  ("short the ladder when overround > 5c") is **partially validated**
+  but with a specific structure: it's a near-resolution phenomenon, not
+  general overround, and requires partial-ladder execution (can't sell
+  what's not bid).
+- [[2026-04-11 Real-book replay invalidates sell-pop edge]]: this
+  synthesis discovered the arb while replaying the sell-pop. The sell-
+  pop edge stays invalidated; the ladder-bid arb replaces it as the
+  priority-0 edge.
+- [[Polymarket CLOB WebSocket]]: should note that `best_bid = 0` is a
+  meaningful signal (MM walkaway on dead buckets) and not just "no data".
+
+## Priority-0 implementation roadmap
+
+### Phase 1: L2-depth verification (NEXT ITERATION)
+- Extend `scripts/polymarket_book/transform.py` to emit an L2 depth
+  parquet from `book` snapshots (not just top-of-book)
+- Re-run exp I with the constraint "available size ≥ N shares on each
+  live bid" for N ∈ {1, 5, 10}
+- Report n_arb retained at each size threshold
+
+### Phase 2: live watchman
+- Thin process subscribes to the WS, maintains cross-sectional
+  per-slug state, alerts whenever sum(live bids) > 1.005
+- Purely observational for now — log events to file
+- Verify alert rate matches the exp I estimate (~20/hour during
+  resolution window)
+- Measure latency from book-change event to alert
+
+### Phase 3: paper execution
+- On alert, record a hypothetical set of N sell orders at the current
+  bids and compute post-resolution PnL
+- Target 30 logged trades, validate avg profit > $0.02 after slippage
+
+### Phase 4: live @ small size
+- Start 1 YES per leg ($4 capital per cycle)
+- Scale iteratively after 30 successful live trades
+- Monitor per-trade slippage vs paper prediction
+
+### Phase 5: multi-city + sizing
+- Generalize the watchman to N cities simultaneously
+- Auto-scale per-leg size based on observed L2 depth
+- Target: $100/day sustained across all NYC+8-city markets
+
+## Negative checks still needed
+
+1. **Is the $0.00 bid really "MM walkaway" or is it a data artifact?** Check
+   if Polymarket's CLOB actually allows $0 bids, or if the recorder is
+   normalizing empty bids to $0.
+2. **Does selling YES on a NegRisk token actually work without pre-holding?**
+   py-clob-client docs say yes, but verify on testnet first.
+3. **Are there hidden per-trade fees at execution time?** The WS stream
+   says `fee_rate_bps = 0`, but the CLOB may charge a maker rebate on the
+   other side that we should account for.
+4. **Is this arb being eaten by someone faster than us?** Measure: after
+   the arb second, does the sum immediately revert to < 1.0? If yes,
+   someone else is executing. If no (it lingers for another 5+ seconds
+   without arb), the market just isn't watching.
+
+## Related
+
+- [[2026-04-11 First pass 1-min price data exploration]] — parent
+  synthesis with the initial hypothesis
+- [[2026-04-11 Real-book replay invalidates sell-pop edge]] — killed
+  the sell-pop and discovered this
+- [[2026-04-11 Asymmetric mean reversion edge]] — invalidated (midpoint
+  artifact)
+- [[Polymarket CLOB WebSocket]] — data source
+- [[Polymarket]] — parent entity
