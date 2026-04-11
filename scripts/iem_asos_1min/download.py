@@ -60,7 +60,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -334,12 +334,21 @@ def fetch_month(
     range_end: date,
     vars_: list[str],
 ) -> bytes:
-    """Fetch one (station, month) window clipped to the user's requested range."""
+    """Fetch one (station, month) window clipped to the user's requested range.
+
+    IEM's ``asos1min.py`` CGI treats its end time as EXCLUSIVE (half-open
+    interval ``[start, end)``), so a query with ``hour2=23, minute2=59``
+    silently drops the final ``23:59`` minute. We query up to the midnight
+    that STARTS the day after ``last_day`` — e.g. ``[2026-03-01 00:00,
+    2026-04-01 00:00)`` — so every minute of ``last_day`` including
+    ``23:59`` is captured.
+    """
     first_day = max(first, range_start)
     last_day = min(month_end(first), range_end)
     start_dt = datetime(first_day.year, first_day.month, first_day.day, 0, 0)
-    end_dt = datetime(last_day.year, last_day.month, last_day.day, 23, 59)
-    url = build_url(station, start_dt, end_dt, vars_)
+    # Half-open end: midnight on the day AFTER last_day.
+    end_excl = datetime(last_day.year, last_day.month, last_day.day, 0, 0) + timedelta(days=1)
+    url = build_url(station, start_dt, end_excl, vars_)
 
     log.info("  fetching %s %s..%s", station, first_day, last_day)
     last_err: Exception | None = None
