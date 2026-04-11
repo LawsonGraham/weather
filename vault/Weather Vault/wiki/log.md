@@ -67,3 +67,14 @@
 - Market-relevance shortcuts section: maps each contract shape (daily high/low, rain-today, frontal timing, convective onset, threshold temperature) to the specific column that answers it
 - Index updated under Concepts section
 - Produced in conjunction with `scripts/iem_metar/` Phase 1 pipeline landing (commits 56eed97 + 4355def on `wt/iem-metar-layer3`)
+
+## [2026-04-11] audit | METAR fidelity audit + v3 transform fixes
+
+- Ran exhaustive raw-CSV ↔ parquet fidelity audit after the Phase 1 land
+- **Found 3 real issues:**
+  1. **Silent data loss in `ice_accretion_{1,3,6}hr` columns.** The trace sentinel `T` was handled for `p01i` but not for the ice columns — 6 rows of trace icing during January 2026 freezing rain events were lost. Fix: v3 transform broadens trace-handling to a `TRACE_COLS` list covering all 4 trace-eligible columns. Confirmed via sweep: no other columns use the sentinel.
+  2. **`temp_c_rmk` / `dewpt_c_rmk` were mislabeled.** python-metar's `m.temp.value('C')` returns the RMK T-group 0.1°C when present, but falls back to the main-body integer °C field (`TT/TD`) on SPECIs without a T-group. 113 rows were showing integer °C from the fallback; the `_rmk` suffix implied strict RMK provenance. Renamed to `temp_c` / `dewpt_c` and documented the fallback behavior. Verified `temp_c` matches `tmpf` within 1°F rounding across all 6198 rows where both are non-null.
+  3. **`slp_mb_rmk` is 100% redundant with IEM's `mslp`.** 0 value disagreements, identical null coverage across 5381 rows. Kept as a cross-check column rather than dropped; documented the guaranteed equality.
+- **Caught by the audit but not bugs:** SPECI detection (IEM strips the `SPECI`/`METAR` type marker from the raw string, so SPECIs must be detected by non-standard minute ≠ `:51`. Phase 1 window has 5383 routine + 817 SPECI = 13.2% SPECI rate, healthy for a winter-to-spring period).
+- Extended `validate.py` with 7 new fidelity checks: raw CSV ↔ parquet row + column fidelity, null-count parity (detect lost values to cast failure), timestamp parse coverage, report-type mix, inter-observation gap distribution, temp_c ↔ tmpf consistency, slp_mb_rmk ↔ mslp redundancy. All new checks pass against the v3 output.
+- Vault page updated with corrected column semantics, SPECI detection quirk, trace sentinel history, and `_rmk` naming rationale

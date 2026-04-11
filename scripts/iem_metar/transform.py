@@ -53,13 +53,15 @@ ParquetCompression = Literal["zstd", "snappy", "lz4", "uncompressed"]
 
 STEP_NAME = "iem_metar_parquet"
 SOURCE_NAME = "iem_metar"
-SCRIPT_VERSION = 2
+SCRIPT_VERSION = 3
 DESCRIPTION = (
     "Transform IEM METAR raw CSVs (hourly + SPECI) into per-(station,month) "
     "Parquet under data/processed/iem_metar/. Missing values (M) → null, trace "
-    "precip (T) → 0.0001, valid parsed to Datetime[us, UTC]. v2 adds RMK remark "
-    "decoding (precise T/Td, SLP, 6h/24h max/min temp, 6h/24h precip, snow "
-    "depth, PRESRR/PRESFR flags, TSB/TSE timing) via the `metar` parser."
+    "precip / ice ('T' in p01i and ice_accretion_*) → 0.0001, valid parsed to "
+    "Datetime[us, UTC]. v2 adds RMK remark decoding (temp/dewpt_c, SLP, 6h/24h "
+    "max/min temp, 6h/24h precip, snow depth, PRESRR/PRESFR flags, TSB/TSE "
+    "timing) via the `metar` parser. v3 fixes silent trace-sentinel loss in "
+    "the ice_accretion columns."
 )
 REQUIRED_DISK_GIB = 2
 
@@ -108,9 +110,19 @@ STRING_COLS: tuple[str, ...] = (
 )
 
 # Trace-precip sentinel used by IEM. Replaced with 0.0001 in to keep the
-# column numeric while preserving the qualitative signal.
+# column numeric while preserving the qualitative signal. The same sentinel
+# appears in every precip-like column the METAR CGI emits; empirically
+# verified against the full 2025-12-20..2026-04-11 window, the complete list
+# of trace-eligible columns is {p01i, ice_accretion_1hr, ice_accretion_3hr,
+# ice_accretion_6hr}.
 TRACE_SENTINEL = "T"
 TRACE_VALUE_INCHES = 0.0001
+TRACE_COLS: tuple[str, ...] = (
+    "p01i",
+    "ice_accretion_1hr",
+    "ice_accretion_3hr",
+    "ice_accretion_6hr",
+)
 
 # --- RMK remark decoding --------------------------------------------------- #
 
@@ -119,9 +131,18 @@ TRACE_VALUE_INCHES = 0.0001
 # column-order / type spec for the downstream `with_columns` expansion.
 RMK_STRUCT_DTYPE = pl.Struct(
     {
-        "temp_c_rmk": pl.Float64,  # precise temp from T-group (0.1°C)
-        "dewpt_c_rmk": pl.Float64,  # precise dewpt from T-group (0.1°C)
-        "slp_mb_rmk": pl.Float64,  # sea-level pressure from SLP-group (0.1 mb)
+        # Best-available temperature/dewpoint in degC. python-metar fuses the
+        # main-body TT/TD integer with the RMK T-group 0.1-degC override when
+        # the latter is present; SPECIs without a T-group fall back to the
+        # main-body integer. Either way this is the canonical degC source and
+        # is never lower-precision than tmpf/dwpf (which are integer degF).
+        "temp_c": pl.Float64,
+        "dewpt_c": pl.Float64,
+        # Sea-level pressure from the RMK SLP-group, 0.1 mb. IEM also decodes
+        # this and exposes it as `mslp`; the two columns are exactly equal on
+        # every row where either is non-null (verified empirically). Kept as
+        # a cross-check / integrity column in case upstream parsing diverges.
+        "slp_mb_rmk": pl.Float64,
         "max_temp_6hr_c": pl.Float64,  # 1-group — present at 00/06/12/18Z
         "min_temp_6hr_c": pl.Float64,  # 2-group — present at 00/06/12/18Z
         "max_temp_24hr_c": pl.Float64,  # 4-group — present at 00Z
@@ -169,8 +190,8 @@ def parse_metar_remarks(raw: str | None) -> dict[str, Any]:
     stay ``None``; the booleans still get filled via regex on the raw string.
     """
     out: dict[str, Any] = {
-        "temp_c_rmk": None,
-        "dewpt_c_rmk": None,
+        "temp_c": None,
+        "dewpt_c": None,
         "slp_mb_rmk": None,
         "max_temp_6hr_c": None,
         "min_temp_6hr_c": None,
@@ -218,8 +239,8 @@ def parse_metar_remarks(raw: str | None) -> dict[str, Any]:
     except Exception:
         return out
 
-    out["temp_c_rmk"] = _safe_val(getattr(m, "temp", None), "C")
-    out["dewpt_c_rmk"] = _safe_val(getattr(m, "dewpt", None), "C")
+    out["temp_c"] = _safe_val(getattr(m, "temp", None), "C")
+    out["dewpt_c"] = _safe_val(getattr(m, "dewpt", None), "C")
     out["slp_mb_rmk"] = _safe_val(getattr(m, "press_sea_level", None), "MB")
     out["max_temp_6hr_c"] = _safe_val(getattr(m, "max_temp_6hr", None), "C")
     out["min_temp_6hr_c"] = _safe_val(getattr(m, "min_temp_6hr", None), "C")
@@ -442,17 +463,20 @@ def transform_one(src: Path, dst: Path, compression: ParquetCompression) -> int:
 
     cast_exprs: list[pl.Expr] = []
 
-    # p01i: trace precip ('T') → 0.0001, numeric otherwise.
-    if "p01i" in df.columns:
-        cast_exprs.append(
-            pl.when(pl.col("p01i") == TRACE_SENTINEL)
-            .then(pl.lit(TRACE_VALUE_INCHES))
-            .otherwise(pl.col("p01i").cast(pl.Float64, strict=False))
-            .alias("p01i")
-        )
+    # Trace-eligible columns (precip + ice accretion): the IEM METAR CGI
+    # emits the string 'T' as the trace sentinel. Replace with 0.0001 in to
+    # keep the column numeric without losing the qualitative signal.
+    for c in TRACE_COLS:
+        if c in df.columns:
+            cast_exprs.append(
+                pl.when(pl.col(c) == TRACE_SENTINEL)
+                .then(pl.lit(TRACE_VALUE_INCHES))
+                .otherwise(pl.col(c).cast(pl.Float64, strict=False))
+                .alias(c)
+            )
 
     for c in NUMERIC_COLS:
-        if c in df.columns and c != "p01i":
+        if c in df.columns and c not in TRACE_COLS:
             cast_exprs.append(pl.col(c).cast(pl.Float64, strict=False))
 
     if "valid" in df.columns:

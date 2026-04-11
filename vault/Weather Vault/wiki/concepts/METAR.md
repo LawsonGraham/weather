@@ -66,8 +66,8 @@ data/processed/iem_metar/     ~400 KB   (10 parquets, ~3.2x compression)
 
 | Column | Source group | Notes |
 |---|---|---|
-| `temp_c_rmk` / `dewpt_c_rmk` | `T` group (`Tnnnndnnn`) | 0.1°C precision. Coverage: ~99.97% of rows. |
-| `slp_mb_rmk` | `SLP` group (`SLPnnn`) | 0.1 mb precision. Redundant with IEM's `mslp` but fresh from raw. |
+| `temp_c` / `dewpt_c` | `T` group (`Tnnnndnnn`), main-body fallback | Best-available °C. python-metar prefers the 0.1°C RMK T-group when present (~98% of rows); SPECIs without a T-group fall back to the main-body integer `TT/TD` field so the column is still °C, never less precise than `tmpf`/`dwpf`. Coverage: 99.97% of rows. Verified against `tmpf`: 6198/6198 match within 1°F rounding. |
+| `slp_mb_rmk` | `SLP` group (`SLPnnn`) | 0.1 mb precision. **Exactly equal to IEM's `mslp` on every non-null row** (empirically verified, 0 disagreements across 5381 rows). Kept as an integrity cross-check — if the two diverge in a future run, upstream parsing has changed. |
 | `max_temp_6hr_c` / `min_temp_6hr_c` | `1`/`2` groups | **Reported at 00/06/12/18Z synoptic hours only.** |
 | `max_temp_24hr_c` / `min_temp_24hr_c` | `4` group | **Reported at 00Z only — the daily extreme used by markets.** |
 | `precip_6hr_in` | `6` group | Absent when zero; presence is itself a signal. |
@@ -103,9 +103,11 @@ KLGA 272151Z 07012KT 10SM FEW050 BKN110 BKN160 BKN250 08/M04 A3008
 ## Schema quirks we hit
 
 - **`#DEBUG:` preamble.** The IEM CGI returns a block of comment lines before the CSV header. The downloader's response validator strips them before asserting the header shape; the transform uses polars' `comment_prefix="#"` to drop them at read time.
-- **Trace precipitation.** IEM emits `T` as the sentinel for trace precip in `p01i`. The transform maps it to `0.0001 in` so the column stays numeric without losing the qualitative signal.
-- **SPECI reports skip most RMK groups.** Special observations fire on rapid change and typically carry only the trigger-relevant fields. Expect `slp_mb_rmk`, `max_temp_*`, and precip groups to be null on SPECI rows even when hourly routine METARs have them.
+- **Trace sentinels in `{p01i, ice_accretion_1hr, ice_accretion_3hr, ice_accretion_6hr}`.** IEM emits `T` as the sentinel for trace precip / trace icing in these four columns. The transform maps `T → 0.0001 in` so every column stays numeric without losing the qualitative signal. **History:** the initial v1/v2 transform only handled this for `p01i`; v3 extended it to the three ice_accretion columns after the extended fidelity audit caught 6 silently-lost rows. An empirical sweep of all 6200 Phase-1 rows confirmed only these four columns use the `T` sentinel.
+- **SPECI reports are identified by observation minute, not by a type marker.** IEM strips the `SPECI` / `METAR` type keyword from the raw string before emitting it, so every `metar` column entry starts with the ICAO code. Routine hourly reports land at `:51` past the hour; anything else is a SPECI (or, rarely, a COR correction). Detection in `validate.py` uses `valid.dt.minute() != 51`. In the Phase 1 window: 5383 routine + 817 SPECI = 6200 rows (13.2% SPECI rate, healthy for a winter-to-spring period).
+- **SPECI reports skip most RMK groups.** Special observations typically carry only the trigger-relevant fields. Expect `slp_mb_rmk`, `max_temp_*`, and precip groups to be null on SPECI rows even when hourly routine METARs have them.
 - **`press_tendency` is not a python-metar attribute**, despite the library having a regex handler for the `5tppp` group. We parse it ourselves with a regex to pull both the magnitude and the character code.
+- **`temp_c` / `dewpt_c` are not strictly RMK-decoded.** python-metar writes the main-body `TT/TD` integer °C into `m.temp`/`m.dewpt` first during the pre-RMK parse, then overwrites with the 0.1°C T-group value during RMK processing if present. For SPECIs without a T-group, `m.temp.value('C')` returns the main-body integer °C — still canonical, still °C, still matches `tmpf` exactly after rounding, just integer precision instead of 0.1°C. The column name drops the `_rmk` suffix that early v2 transforms used, because the name was lying.
 
 ## Market-relevance shortcut list
 
@@ -113,7 +115,7 @@ KLGA 272151Z 07012KT 10SM FEW050 BKN110 BKN160 BKN250 08/M04 A3008
 - **"Will it rain today" contracts** → `precip_24hr_in` at 00Z + `wxcodes` during the day.
 - **Frontal-passage timing** → `presrr` / `presfr` / `press_tendency_3hr_mb`.
 - **Convective onset contracts** → `tsb_minute` / `tse_minute` / `wxcodes =~ TS`.
-- **Threshold-of-the-day contracts (e.g. "high > 75°F")** → `temp_c_rmk` (precise) instead of integer `tmpf`.
+- **Threshold-of-the-day contracts (e.g. "high > 75°F")** → `temp_c` (best-available, 0.1°C from RMK T-group on ~98% of rows) instead of integer `tmpf`.
 
 ## Related
 
