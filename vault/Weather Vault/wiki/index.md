@@ -11,6 +11,7 @@
 
 _Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
+- [[2026-04-11 Asymmetric mean reversion edge]] — UP moves mean-revert 40% in 10 min, DOWN moves don't; sell-3c-pop at midpoint wins 65% / +1.9c (candidate edge, midpoint only, needs real-book validation)
 - [[2026-04-11 First pass 1-min price data exploration]] — first exploratory pass on the brand-new 1-min Polymarket price data: ladder overround structure, volatility concentration, evening-before-resolution info peak, three candidate naive edges
 - [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
 
