@@ -75,6 +75,9 @@ __marimo__/
 # Pipeline workspace — scratch dir, entire directory ignored for now
 pipeline-workspace/
 
+# DuckDB spill directory (runtime state from long-running queries)
+.tmp/
+
 # Local-only scaffolding for the 4-role coding pipeline (architect /
 # implementer / reviewer / tester). Kept on disk for experimentation
 # but intentionally NOT committed — the user hasn't locked in a

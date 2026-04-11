@@ -1,6 +1,6 @@
 # Wiki Index
 
-> Catalog of every page in the wiki. Organized by type, with a one-line description each. Updated by the `vault-scribe` subagent on every ingest; read first by the `vault-seed` and `vault-query` skills.
+> Catalog of every page in the wiki. Organized by type, with a one-line description each. Updated by `vault-capture` whenever new knowledge lands; read by `vault-seed` at session start.
 
 ## Entry points
 
@@ -9,8 +9,9 @@
 
 ## Syntheses
 
-_Cross-source analyses live in `wiki/syntheses/`. Added via `/ingest`, promoted from `/ask` queries, or written directly by `vault-capture`._
+_Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
+- [[2026-04-11 NYC Polymarket intraday sniping backtest]] — negative-result backtest: naive ASOS-threshold sniping not viable; market reprices ~90s after a sustained cross; edge lives pre-cross in HRRR forecast quality
 - [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
 
 ## Entities
@@ -34,7 +35,7 @@ _Ideas and methods: HRRR, MOS, TAF, calibration, Kelly sizing, ensemble spread, 
 
 ## How this index works
 
-- Every wiki page must be linked here. If a page isn't in the index, it's effectively orphaned and `vault-lint` will flag it.
+- Every wiki page must be linked here. If a page isn't in the index, it's effectively orphaned.
 - Each entry: `- [[path/to/page]] — one-line description`
 - Keep entries alphabetical within each section.
-- `vault-scribe` maintains this file automatically on ingest. Don't edit by hand unless fixing errors.
+- `vault-capture` maintains this file when new pages land.
