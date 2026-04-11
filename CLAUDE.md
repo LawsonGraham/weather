@@ -62,6 +62,29 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 - For hard-to-reverse git operations (`reset --hard`, force push, branch deletion), confirm with the user before running.
 - Don't create commits the user didn't ask for — but **do** proactively offer to commit when a milestone is clearly complete, and explain what you'd stage and why.
 
+### 6. Delete as you go — no stale code, no dead docs, no leftover patterns
+
+**When you replace something, delete the old version in the same commit.** This project expects heavy iteration, and without aggressive cleanup the repo will rot into a graveyard of dead scripts, half-migrated patterns, and obsolete docs within a month. This rule is intentionally aggressive. **Err on the side of deletion — git history is the backup.**
+
+**The rule:**
+
+- When you introduce a new version of a script / module / skill / agent / convention / pattern, **delete the old one in the same commit**. Never the next commit, never "for now." No `_old`, `_v1`, `_deprecated`, `.bak`, or `prev_` variants in the working tree. Use `git log` / `git blame` / `git show <sha>:path` as the archive, not the filesystem.
+- **No commented-out code blocks.** If you might want it back later, git has it.
+- **No "TODO: remove this later" comments.** Remove it now or don't mention it. Future-you will not find the TODO.
+- **No dead docs.** README, SKILL.md, CLAUDE.md, and vault pages must describe how things *currently* work. If an edit makes a doc section stale, update or delete that section in the same commit as the behavior change. A doc that lies is worse than no doc.
+- **Delete unused imports, functions, variables, and classes as you find them.** Ruff catches most of these — run `uv run ruff check --fix .` after any substantial edit.
+- **When a convention is superseded, scrub references to the old one everywhere.** Grep for it. If the new convention is "downloaders live in `scripts/download/<source>/script.py`", no doc should still mention bash versions at the root.
+- **When a skill, subagent, or vault page becomes obsolete, delete it.** Stale skills and agents are strictly worse than no skills — they mislead future sessions.
+
+**The cleanup pass** — run at the end of any non-trivial change:
+
+1. **Grep for references** to whatever you removed: function names, file paths, old flag names, old config keys, old module names. Any orphaned reference → delete or fix.
+2. **Run `uv run ruff check .`** across the repo. New `F401` (unused import), `F841` (unused variable), or `RUF100` (unused `noqa`) are cleanup targets introduced by your change.
+3. **Scan changed files for commented-out code, TODO comments, stub functions, and "temporary" hacks.** Delete or promote — never leave for later.
+4. **Ask yourself: "what did I just make obsolete that I haven't deleted yet?"** Make the list. Delete everything on it in the same commit as the new work.
+
+**When in doubt: delete.** If a deletion turns out to be premature, `git revert <sha>` or `git show <sha>:path > path` restores it — a cheap round trip. A repo full of fossils is expensive to fix later, and every stale thing makes the next cleanup pass bigger. Default posture: aggressive removal, not cautious accumulation.
+
 ## Data conventions
 
 - Data lives in `data/` which is **gitignored** (`data/*` + `!data/README.md`). See [`data/README.md`](data/README.md) — it is the authoritative source for layout and conventions.
