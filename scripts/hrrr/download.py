@@ -971,7 +971,8 @@ def read_existing_keys(
 
 def write_station_parquets(counters: CycleCounters) -> None:
     """Write hourly.parquet and subhourly.parquet under data/raw/hrrr/<STATION>/.
-    Merges with any existing Parquet data at those paths (so re-runs accumulate).
+    Merges with any existing Parquet data at those paths (so re-runs accumulate),
+    deduping by primary key on --force re-runs (last-write-wins).
     """
     # Split accumulated rows by station.
     for station in STATIONS:
@@ -981,8 +982,14 @@ def write_station_parquets(counters: CycleCounters) -> None:
         h_rows = [r for r in counters.hourly_rows if r["station"] == station]
         s_rows = [r for r in counters.subh_rows if r["station"] == station]
 
-        _write_or_append(station_dir / "hourly.parquet", h_rows)
-        _write_or_append(station_dir / "subhourly.parquet", s_rows)
+        _write_or_append(
+            station_dir / "hourly.parquet", h_rows, key_cols=["init_time", "fxx"]
+        )
+        _write_or_append(
+            station_dir / "subhourly.parquet",
+            s_rows,
+            key_cols=["init_time", "fxx", "forecast_minutes"],
+        )
 
         if h_rows or s_rows:
             log.info(
@@ -994,7 +1001,16 @@ def write_station_parquets(counters: CycleCounters) -> None:
             )
 
 
-def _write_or_append(path: Path, rows: list[dict[str, Any]]) -> None:
+def _write_or_append(
+    path: Path, rows: list[dict[str, Any]], *, key_cols: list[str]
+) -> None:
+    """Append `rows` to an existing Parquet at `path`, deduping on `key_cols`.
+
+    Last-write-wins: if a row's (key_cols) collides with an existing row, the
+    NEW row replaces the old one. This makes `--force` re-runs idempotent
+    with respect to the final Parquet state — running the downloader twice
+    for the same date range produces the same output as running it once.
+    """
     if not rows:
         return
     new_tbl = _rows_to_table(rows)
@@ -1024,6 +1040,26 @@ def _write_or_append(path: Path, rows: list[dict[str, Any]]) -> None:
             combined = new_tbl
     else:
         combined = new_tbl
+
+    # Dedup by primary key, keeping the LAST occurrence (new rows win).
+    try:
+        import polars as pl
+
+        df = pl.from_arrow(combined)
+        before = df.height
+        df = df.unique(subset=key_cols, keep="last", maintain_order=True)
+        after = df.height
+        if before != after:
+            log.info(
+                "deduped %s: %d rows → %d rows (removed %d duplicates)",
+                path.name,
+                before,
+                after,
+                before - after,
+            )
+        combined = df.to_arrow()
+    except Exception as e:
+        log.warning("dedup failed for %s: %s — writing without dedup", path, e)
 
     pq.write_table(
         combined,
