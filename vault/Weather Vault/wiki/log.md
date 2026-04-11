@@ -86,15 +86,16 @@
 - Extended `validate.py` with 7 new fidelity checks: raw CSV ↔ parquet row + column fidelity, null-count parity (detect lost values to cast failure), timestamp parse coverage, report-type mix, inter-observation gap distribution, temp_c ↔ tmpf consistency, slp_mb_rmk ↔ mslp redundancy. All new checks pass against the v3 output.
 - Vault page updated with corrected column semantics, SPECI detection quirk, trace sentinel history, and `_rmk` naming rationale
 
-## [2026-04-11] capture | NYC Polymarket upward-bias Strategy D (deployable)
+## [2026-04-11] capture | Strategy D deployment refinements (second synthesis of the day on this thesis)
 
-- Page: wiki/syntheses/2026-04-11 NYC Polymarket upward-bias Strategy D.md
-- Trigger: 8-iteration exploration loop on NYC Polymarket daily-temp markets (exp01–exp14 on `wt/nyc-polymarket-backtest`) produced a deployable thesis
-- Headline: 12 EDT favorite's low edge is ~4°F too cold 80% of days. Strategy D buys `fav_lo + 2` bucket, earns +81.59 cum PnL per $1 across 44 bets, hit rate 29.5%, chronological OOS test (+69.79) > train (+11.81). Deploy at 2% Kelly with `p_entry ≥ 0.02` filter after 30-day paper-trade.
-- Entities touched: [[Polymarket]], [[KLGA]], [[IEM]]
-- Concepts touched: [[Polymarket weather market catalog]], [[ASOS 1-minute]], [[METAR]]
-- Companion negative-result: [[2026-04-11 NYC Polymarket intraday sniping backtest]] (cross-ref added to both directions of index; back-ref into the sniping page itself is pending — file not yet on disk at time of capture)
-- Anti-findings recorded: ASOS threshold sniping (no reaction window), paired underdog hedges (miss magnitudes too big), running-max chase (outlier lottery), solo favorite fade (median −$1, strictly worse than Strategy D)
-- Discovered facts recorded: ladder is prob-normalized (no overround), ASOS 1-min LGA has 15°F gaps (use METAR instead), `end_date` is not market close, DuckDB naive-ts timezone gotcha
-- Contradictions flagged: none
-- Blocked on: Exp18 HRRR backfill (~42%) — will test whether HRRR shares the under-forecast bias or is closer to truth (direct alpha vs market)
+- Page: wiki/syntheses/2026-04-11 Strategy D deployment refinements.md
+- Follow-up to the iter-10 discovery synthesis [[2026-04-11 NYC Polymarket upward-bias Strategy D]]; captures the exp16–exp36 deployment-readiness chain + the live recommender pipeline
+- **Headline**: Strategy D is deployable today. Real-ask cost model roughly doubles backtest PnL (mid == ask, median spread 0.000). Optimal entry hour is 16 EDT primary / 18 EDT bonus (not 12 EDT); 08–10 EDT LOSES. Market is human-driven (peak volume 14–15 EDT, not HRRR windows) → edge persistence is months. Universal upward bias decaying ~34% across sample (deploy now). Retail flow is 100% bullish both buckets (we slip in alongside, not fade). Flat favorites never win but aren't an actionable entry filter. Winner is priced ≤38¢ all day (market is probability-spreading, not winner-picking). Multi-bucket basket dilutes edge from +94% → +1% (don't basket). Lag-1 autocorrelation 0.04 (no carryover filter).
+- **Live test @ 13:40 EDT on 2026-04-11**: `live_now.py` caught intraday repricing in real time — favorite shifted from 62–63°F @ 0.39 this morning to 60–61°F @ 0.495 now; new +2 target is 62–63°F @ 0.305 with 3¢ spread (wider than historical 0¢ median). Direct live confirmation of the exp32 intraday rebalancing mechanism.
+- **Today's trade recommendation**: buy 612.75 YES on `highest-temperature-in-nyc-on-april-11-2026-62-63f` at limit ≤ $0.3264, stake $200 (2% Kelly on $10k), profit +$412.75 / loss −$200.
+- **Deployable artifacts** (on `wt/nyc-polymarket-backtest` branch): `notebooks/experiments/nyc-polymarket/exp01–36*.py`, `scripts/polymarket_weather/{live_recommender.py, live_now.py, paper_ledger.py}`
+- **Deployment blockers**: HRRR backfill (~96% complete, blocks exp30 HRRR-conditional analysis + Phase 2); 14 days paper-trade validation before real capital
+- Entities touched: [[Polymarket]], [[KLGA]]
+- Concepts touched: [[METAR]], [[ASOS 1-minute]], [[Polymarket weather market catalog]]
+- Contradictions flagged: entry-hour finding (16–18 EDT optimal) supersedes the 12 EDT anchor from the iter-10 synthesis — not a data contradiction, a refinement from extended hour sweep. Cost model correction (mid == ask) supersedes the placeholder cost assumption in the iter-10 chain and roughly doubles all previously reported Strategy D PnL headlines.
+- Index updated under Syntheses

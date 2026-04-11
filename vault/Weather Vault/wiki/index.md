@@ -11,9 +11,8 @@
 
 _Cross-source analyses live in `wiki/syntheses/`. Written by `vault-capture` when a decision, gotcha, or lesson is worth preserving across sessions._
 
-- [[2026-04-11 NYC Polymarket intraday sniping backtest]] — negative-result: ASOS 1-min threshold sniping has no human reaction window (~90s market reprice); paired with positive-result Strategy D
-- [[2026-04-11 NYC Polymarket upward-bias Strategy D]] — deployable strategy: buy `fav_lo + 2` strike at 12 EDT; +81.6 cum PnL per $1 stake across 44 bets, OOS test > train
 - [[2026-04-11 Polymarket schema corrections]] — undocumented Gamma / Goldsky subgraph schema gotchas discovered while building the native Polymarket downloader
+- [[2026-04-11 Strategy D deployment refinements]] — exp16–36 operationalization: real-ask cost model (~2x PnL), entry-hour optimization (16–18 EDT), edge-decay monitoring, live Gamma API recommender + paper ledger; Strategy D is deployable today
 
 ## Entities
 
