@@ -108,12 +108,30 @@ When a discrete task, feature, milestone, or meaningful chunk of work is complet
 
 **Default to a git worktree for all non-trivial work.** This repo is expected to run parallel Claude sessions, and the worst failure mode is two sessions thrashing on the main checkout at the same time. Worktrees eliminate that: each session gets its own working tree + branch, the `.git/` database is shared, merges happen at the end. The [`worktree-first`](.claude/skills/worktree-first/SKILL.md) skill has the full workflow, commands, and conventions.
 
-**The rule:**
+**The rule — every change in a worktree; every worktree's `data/` is a symlink into main's `data/`:**
 
 - **Every Claude session that changes files should be working in a worktree**, not the main checkout. Two ways:
-    1. **`Agent` tool with `isolation: "worktree"`** — ephemeral, cleanest for bounded subagent tasks. Claude Code creates + cleans up the worktree automatically.
-    2. **Manual `git worktree add ../weather-wt/<name> -b wt/<name>`** — longer-lived, for work spanning multiple commits. Branch convention: `wt/<purpose>`. Path convention: `../weather-wt/<name>` (sibling to main repo, outside its tree).
-- **Read-only operations** (questions, vault queries, `git log`, lint checks, running tests that don't mutate tracked files) can happen on the main checkout without a lock.
+    1. **`Agent` tool with `isolation: "worktree"`** — ephemeral, cleanest for bounded subagent tasks. Claude Code creates + cleans up automatically.
+    2. **Manual worktree with a `data/` symlink to main** — longer-lived, for work spanning multiple commits. **Canonical 3-line creation** from the main checkout:
+       ```sh
+       git worktree add ../weather-wt/<name> -b wt/<name>
+       mkdir -p data                                            # ensure main's data/ exists
+       ln -sfn "$(pwd)/data" ../weather-wt/<name>/data          # symlink wt/data → main/data
+       ```
+       Branch convention: `wt/<purpose>`. Path convention: `../weather-wt/<name>` (sibling to main repo, outside its tree).
+- **`data/` is shared across all worktrees via the symlink.** Every downloader writes to main's `data/` regardless of which worktree ran the script — scripts compute `REPO_ROOT / "data"` and the symlink resolves transparently. **No data duplication on disk. No porting at cleanup. No risk of losing downloaded data when a worktree is removed.** Code changes still flow through git normally (commit in worktree → merge to main); only `data/` short-circuits via the symlink.
+- **Never `rm -rf <wt>/data/*`** or glob-delete inside the symlinked `data/` — it deletes files from main's `data/`. Safe cleanup is `git worktree remove <wt>`, which unlinks the symlink without touching the target.
+- **Worktree lifecycle — commit, merge, clean up (always in this order):**
+    1. Commit every change to the worktree's branch (`wt/<purpose>`). **Never commit to master from inside the worktree.** Let the merge do that.
+    2. When the worktree's work is fully done, from the main checkout: `git merge --ff-only wt/<name>`. Prefer fast-forward. Rebase the branch onto master first if it has diverged.
+    3. `git worktree remove ../weather-wt/<name>` — safe: the symlink goes, main's `data/` stays.
+    4. `git branch -d wt/<name>` — delete the merged branch.
+    5. Verify: `git worktree list`, `git log --oneline -3`, and check that the new data is visible in main's `data/` (it always is — the symlink made it land there during the download).
+- **Commit discipline inside the worktree:**
+    - Commit at each milestone per Rule 5. Multiple small commits in the branch are fine; they squash or fast-forward at merge time.
+    - A worktree may span multiple Claude sessions — keep committing to the branch, don't merge incrementally.
+    - Fast-forward only. If master has moved and a fast-forward isn't possible, rebase the worktree branch onto master, resolve conflicts in the worktree, then try the fast-forward again. No merge commits unless justified.
+- **Read-only operations** (questions, vault queries, `git log`, lint checks, running tests that don't mutate tracked files) can happen on the main checkout without a lock or worktree.
 - **Trivial edits carveout:** single-file changes under ~20 lines, typo fixes, and doc corrections can skip the worktree *if* the `.main-repo-lock` is not held. Anything bigger → worktree.
 
 **When you must use the main checkout — the `.main-repo-lock` file:**

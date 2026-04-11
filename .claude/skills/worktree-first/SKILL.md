@@ -47,9 +47,11 @@ For bounded subagent tasks, spawn an Agent with `isolation: "worktree"`. Claude 
 
 **Use for:** focused research, experiments that may not produce code, parallel exploration that might fan out.
 
-## Option B — Manual `git worktree add` (longer-lived)
+## Option B — Manual worktree with `data/` symlinked to main (longer-lived)
 
-For multi-step work that spans several commits, or when you want to keep the worktree around for iteration:
+For multi-step work that spans several commits, or when you want to keep the worktree around for iteration. **Every manual worktree's `data/` MUST be a symlink into main's `data/`** so downloaded files land in the canonical place and are never lost when the worktree is removed.
+
+### Canonical creation
 
 ```sh
 # from the main checkout:
@@ -57,21 +59,56 @@ BRANCH=wt/iem-asos-download
 WT_PATH=../weather-wt/iem-asos-download
 
 git worktree add "$WT_PATH" -b "$BRANCH"
+mkdir -p data                                     # ensure main's data/ exists
+ln -sfn "$(pwd)/data" "$WT_PATH/data"             # wt/data → main/data
+
+# now the worktree is ready — every download script that computes
+# REPO_ROOT / "data" will write to main's data/ via the symlink
+```
+
+**Why the symlink:** scripts compute `REPO_ROOT = Path(__file__).resolve().parents[3]` and then `RAW_DIR = REPO_ROOT / "data" / "raw" / SOURCE_NAME`. In a worktree, `REPO_ROOT` resolves to the worktree path. Without a symlink, downloads would land in `../weather-wt/<name>/data/raw/<source>/` — duplicated per worktree and lost when the worktree is removed. With the symlink, the `data/` segment of the path resolves transparently to main's `data/`, so every download lands in the canonical location regardless of which worktree ran the script.
+
+**No script changes needed.** Python's file I/O follows symlinks by default, and the data-script template doesn't need to know whether it's running in a worktree or the main checkout.
+
+### Working in the worktree
+
+```sh
 cd "$WT_PATH"
+# make edits, run scripts, commit as usual
+uv run python scripts/download/iem_asos_1min/script.py --stations NYC LGA
+# ^ this writes to main's data/raw/iem_asos_1min/ via the symlink
 
-# ... work happens here: edit, commit, test ...
+git add scripts/ CLAUDE.md
+git commit -m "..."
+# commits stay on wt/iem-asos-download; master is untouched
+```
 
-# when done:
-git push origin "$BRANCH"            # or merge back to main directly
-cd -                                  # back to main checkout
-git worktree remove "$WT_PATH"
-git branch -d "$BRANCH"               # after merge
+### Closing out — merge + cleanup
+
+```sh
+# from the main checkout (cd back if you were in the worktree):
+cd /path/to/main/checkout
+
+git merge --ff-only wt/iem-asos-download          # bring branch commits to master
+git worktree remove ../weather-wt/iem-asos-download   # removes the symlink; main/data untouched
+git branch -d wt/iem-asos-download                # delete the merged branch
+```
+
+**No data porting step.** Data was always in main's `data/` the whole time. `git worktree remove` unlinks the symlink (it's a symlink, not the target), so main's data is safe.
+
+### Verification
+
+```sh
+git worktree list                             # confirm worktree gone
+git log --oneline -3                          # confirm branch commits landed on master
+ls data/raw/<source>/MANIFEST.json            # confirm data is in main
 ```
 
 **Conventions:**
 - Branch names: `wt/<purpose>` (e.g. `wt/iem-asos-download`, `wt/calib-weather-markets`)
-- Worktree paths: `../weather-wt/<name>` — sibling to the main repo, outside its tree (no cross-contamination of ignored files, easier to nuke)
-- One worktree per task. Don't reuse.
+- Worktree paths: `../weather-wt/<name>` — sibling to main repo, outside its tree
+- One worktree per task. Don't reuse. If you need to return to a closed task, create a new worktree from master.
+- `data/` in every worktree is a symlink to main's `data/`. No exceptions.
 
 ## When you MUST use the main checkout — the lock
 
@@ -110,16 +147,45 @@ cat .main-repo-lock 2>/dev/null || echo "unlocked"
 ## Rules
 
 - **Default is worktree.** Main checkout is the exception.
-- **Never hold the lock for long operations** (downloads, training runs, anything over ~1 minute). The lock is for the *edit* of the main checkout, not the long op. Release before you sleep; reacquire after if needed.
+- **`data/` in every manual worktree is a symlink to main's `data/`.** Set up at worktree creation (`ln -sfn "$(pwd)/data" "$WT_PATH/data"`). Scripts write through the symlink, so downloads always land in main. No duplication, no porting, no data loss on worktree removal.
+- **Commit on the worktree's branch, never to master directly from inside the worktree.** Let the merge do that.
+- **Merge back only when the worktree's work is fully done.** Prefer fast-forward (`git merge --ff-only wt/<name>`). If master has moved, rebase the branch onto master in the worktree, resolve conflicts there, then retry the fast-forward.
+- **Never hold the main-repo lock for long operations** (downloads, training runs, anything over ~1 minute). The lock is for editing main-checkout files, not long-running execution.
 - **Never leave the lock behind.** If you crash or error, the lock must still be released. Use `trap 'rm -f .main-repo-lock' EXIT` in shell scripts.
-- **Lock file is gitignored.** It's runtime state, not a repo artifact. Never commit it.
-- **Cleanup worktrees when done.** Don't accumulate stale worktrees — `git worktree list` shows them, `git worktree remove` cleans.
-- **Trivial carveout:** single-file edits under ~20 lines, typo fixes, and documentation corrections can skip the worktree *if* the lock is not held. Anything bigger → worktree.
+- **Lock file is gitignored.** Runtime state. Never commit it.
+- **Cleanup worktrees when done.** Don't accumulate stale worktrees — `git worktree list` to inspect, `git worktree remove` to clean.
+- **Trivial carveout:** single-file edits under ~20 lines, typo fixes, and documentation corrections can skip the worktree *if* `.main-repo-lock` is not held.
 
 ## Anti-patterns
 
-- **Holding the lock for 30+ minutes** while a download or training job runs. The lock is for edit coordination, not long-running execution.
-- **Forgetting to remove the worktree** after merging. `git worktree list` regularly; remove anything stale.
-- **Treating the lock as a real mutex.** It's advisory coordination between cooperating Claude sessions, not a security primitive. A buggy or malicious agent can ignore it. Assume cooperation, not enforcement.
+- **`rm -rf <wt>/data/*` or `rm -rf <wt>/data/raw/`** — glob-delete inside a symlinked directory follows the symlink and destroys files in main's `data/`. **Only `git worktree remove <wt>` is the safe cleanup**; it removes the symlink as a link-file without following it.
+- **Creating a manual worktree without the data symlink.** The worktree will write downloads to its own `data/`, duplicating everything on disk and losing it on cleanup. The 3-line creation recipe is mandatory for all manual worktrees.
+- **Holding the main-repo lock for 30+ minutes** while a download or training job runs. The lock is for edit coordination, not long-running execution.
+- **Forgetting to remove the worktree after merging.** `git worktree list` regularly; remove anything stale.
+- **Treating the lock as a real mutex.** It's advisory coordination between cooperating Claude sessions, not a security primitive. Assume cooperation, not enforcement.
 - **Making a worktree for every single edit.** Use the trivial carveout — not every typo fix needs a new branch.
-- **Leaving stale locks** from crashed sessions. If you see a lock with an old `acquired_at` (> 1 hour) and no obvious owner, check with the user before removing. Don't unilaterally steal the lock.
+- **Leaving stale locks** from crashed sessions. If you see a lock with an old `acquired_at` (> 1 hour) and no obvious owner, check with the user before removing.
+- **Committing to master from inside a worktree** via `git checkout master` + cherry-pick. Let the merge step do that; don't interleave master commits with worktree work.
+
+## Migrating a pre-existing worktree (one without the data symlink)
+
+If a worktree was created before the symlink rule and already has data under its own `data/` tree:
+
+```sh
+# from the main checkout:
+WT_PATH=../weather-wt/<name>
+MAIN_DATA="$(pwd)/data"
+
+# 1. Port any downloaded files from the worktree's data/ into main's data/
+#    (no overwrites — if a filename collision exists, resolve it manually first)
+rsync -av --ignore-existing "$WT_PATH/data/" "$MAIN_DATA/"
+
+# 2. Replace the worktree's data/ directory with a symlink to main
+rm -rf "$WT_PATH/data"
+ln -sfn "$MAIN_DATA" "$WT_PATH/data"
+
+# 3. Confirm no tracked files were affected (data/ is gitignored so there shouldn't be)
+git -C "$WT_PATH" status
+```
+
+One-time migration per legacy worktree. Once migrated, the standard commit / merge / cleanup flow applies.
