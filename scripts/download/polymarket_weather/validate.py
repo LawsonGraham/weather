@@ -54,10 +54,6 @@ REQUIRED_GAMMA_FIELDS = [
     "question",
     "clobTokenIds",
     "outcomes",
-    "volumeNum",
-    "volumeClob",
-    "bestBid",
-    "bestAsk",
     "orderPriceMinTickSize",
     "orderMinSize",
     "negRisk",
@@ -65,6 +61,20 @@ REQUIRED_GAMMA_FIELDS = [
     "closed",
     "createdAt",
     "endDate",
+]
+
+# Fields that Gamma populates conditionally, not always.  Tracked for
+# observability but not required:
+#   volumeNum / volumeClob / volume — dropped for closed markets with zero
+#   trading volume (Polymarket omits the field entirely rather than zeroing).
+#   bestBid / bestAsk — dropped once a market is fully closed and its
+#   orderbook snapshot is no longer maintained.  A market can have bestAsk
+#   but not bestBid (one-sided book at the time of the last snapshot).
+CONDITIONAL_GAMMA_FIELDS = [
+    "volumeNum",
+    "volumeClob",
+    "bestBid",
+    "bestAsk",
 ]
 
 REQUIRED_FILL_FIELDS = [
@@ -202,23 +212,38 @@ def check_completeness(r: Report, selected: list[dict[str, Any]]) -> tuple[list[
 
 
 def check_gamma_schema(r: Report, slugs: list[str]) -> list[dict[str, Any]]:
-    """Load every gamma market and verify required fields.  Returns list of markets."""
+    """Load every gamma market, verify required fields, and report conditional-field coverage."""
     r.section("[2] Gamma schema sanity")
     markets: list[dict[str, Any]] = []
-    missing_fields: dict[str, int] = {}
+    missing_required: dict[str, int] = {}
+    conditional_present: dict[str, int] = {k: 0 for k in CONDITIONAL_GAMMA_FIELDS}
     for slug in slugs:
         m = json.loads((GAMMA_DIR / f"{slug}.json").read_text())
         markets.append(m)
         for field in REQUIRED_GAMMA_FIELDS:
             if field not in m:
-                missing_fields[field] = missing_fields.get(field, 0) + 1
-    if not missing_fields:
+                missing_required[field] = missing_required.get(field, 0) + 1
+        for field in CONDITIONAL_GAMMA_FIELDS:
+            if field in m:
+                conditional_present[field] += 1
+
+    if not missing_required:
         r.ok(f"all {len(markets):,} markets have all {len(REQUIRED_GAMMA_FIELDS)} required fields")
     else:
-        for field, n in sorted(missing_fields.items(), key=lambda x: -x[1]):
-            r.fail(f"field '{field}' missing in {n} markets")
+        for field, n in sorted(missing_required.items(), key=lambda x: -x[1]):
+            r.fail(f"required field '{field}' missing in {n} markets")
+
     neg_risk = sum(1 for m in markets if m.get("negRisk"))
     r.info(f"negRisk=true:  {neg_risk}/{len(markets)}  ({neg_risk / len(markets):.0%})")
+
+    # Conditional-field coverage is observability, not a failure.  Polymarket
+    # drops volume fields when a market had zero trading, and drops bid/ask
+    # when a closed market's orderbook snapshot has been torn down.
+    r.info("conditional field coverage (not required):")
+    for field in CONDITIONAL_GAMMA_FIELDS:
+        n = conditional_present[field]
+        pct = n / len(markets) if markets else 0
+        r.info(f"  {field:<12} {n:>5,}/{len(markets):,}  ({pct:.0%})")
     return markets
 
 
