@@ -182,6 +182,82 @@ Prior syntheses:
 - Auto-scale per-leg size based on observed L2 depth
 - Target: $100/day sustained across all NYC+8-city markets
 
+## expN (2026-04-11 later): first live alert revises capacity DOWN — active MM found
+
+The watchman caught its first live alert: **april-12-2026 at 23:04:28 UTC,
+sum_bid = 1.010**, all 11 buckets present with live bids. But persistence
+analysis tells a completely different story from the expJ april-11 findings:
+
+```
+23:04:24  sum_bid=0.499 (6/11 fresh)      ← sparse
+23:04:25  sum_bid=0.820 (10/11)           
+23:04:27  sum_bid=1.000 (11/11)           ← exactly 1.000 — BASELINE
+23:04:28  sum_bid=1.010 (11/11)           ← ARB OPEN (watchman fires)
+23:04:29  sum_bid=1.000 (11/11)           ← ARB CLOSED in 1 second
+23:04:30…  sum_bid=1.000 (11/11)          ← stays at 1.000 for 30+ sec
+```
+
+**The arb was open for EXACTLY 1 SECOND.** Someone is actively holding
+`sum(best_bid) = 1.000` and correcting deviations in <1 second.
+
+### Two distinct regimes
+
+| dimension              | april-11 (1h pre-resolution) | april-12 (25h pre-resolution) |
+|------------------------|------------------------------|-------------------------------|
+| Arb persistence        | 2-30 seconds                 | **1 second**                  |
+| Longest linger         | 30+ seconds (20:13 cluster)  | 1 second                      |
+| MM active correction?  | NO                           | **YES**                       |
+| Dead-bucket bids       | $0.000 (walkaway)            | All live                      |
+| Viable for taker?      | YES (with fast bot)          | NO (sub-second)               |
+
+**April-12 (and presumably most pre-resolution hours) has an active MM
+bot correcting deviations.** Taker execution is infeasible there.
+
+**April-11 near-resolution (final 1-2 hours) is the ONLY window where
+MMs walk away** — creating sustained lingers that a taker can capture.
+
+### Revised capacity estimate (MAJOR)
+
+Previous estimate (from expJ, based on 65-min april-11 observation):
+- ~$75-150/day at 5-10 shares per leg, 8 cities
+
+**Revised (from expN, accounting for the MM correction mechanism):**
+- **Pre-resolution hours**: taker UNCATCHABLE (<1s correction window)
+- **Near-resolution final 1h**: taker viable, ~20 arbs/hour × 50% catchable
+  at 500ms latency × $0.10/arb = $1/day per city
+- **NYC-only**: ~$5-15/day realistic
+- **8 cities**: $40-120/day
+
+**Down from $75-150/day → $5-15/day NYC (90% haircut).** Still positive,
+still worth building, but in the "mechanical small edge" category rather
+than "core strategy" category.
+
+### Two execution models, both still plausible
+
+1. **Fast near-resolution taker**: focus on the final hour of each city's
+   resolution window. Requires <500ms order-placement latency. ~$1/day/city.
+2. **Passive market-making**: post resting sells at `best_ask - 1c` across
+   all buckets. Get filled during brief overround flashes. Captures the
+   sub-second arbs the taker can't. Full MM architecture + capital + adverse
+   selection risk. Would recapture most of the previous capacity estimate
+   IF built correctly.
+
+For a quick proof-of-concept: build option (1) first. Option (2) is a
+multi-month build.
+
+### Who is the active MM?
+
+Unknown. Possibilities:
+- Polymarket official MM incentive program participant
+- Jane Street / Susquehanna-style sophisticated shop
+- An individual bot operator with good latency
+
+Could be identified by cross-referencing the `last_trade_price` flow
+around alert moments — if there's a consistent taker-side pattern
+correcting deviations, that's the MM.
+
+---
+
 ## Phase 1-2 complete: L2-verified + live watchman landed (expJ update)
 
 ### Temporal distribution (hour-by-hour on april-11)
