@@ -1010,59 +1010,67 @@ def _write_or_append(
     NEW row replaces the old one. This makes `--force` re-runs idempotent
     with respect to the final Parquet state — running the downloader twice
     for the same date range produces the same output as running it once.
+
+    Uses polars end-to-end (not pyarrow concat_tables) because polars
+    handles schema unification between differently-authored parquets
+    gracefully. pyarrow concat_tables is strict about metadata equality
+    and fails on otherwise-compatible schemas.
+
+    **Data-loss safety:** this function will NEVER silently overwrite
+    existing data. If anything fails during the merge, it raises instead
+    of falling back to a destructive write. The caller's manifest handler
+    will mark the run failed; the parquet on disk stays untouched.
     """
     if not rows:
         return
-    new_tbl = _rows_to_table(rows)
+    import polars as pl
+
+    new_df = pl.from_arrow(_rows_to_table(rows))
+
     if path.exists():
-        try:
-            old_tbl = pq.read_table(path)
-            # Unify columns between old and new tables before concat.
-            all_cols: list[str] = []
-            for c in list(old_tbl.column_names) + [
-                c for c in new_tbl.column_names if c not in old_tbl.column_names
-            ]:
-                if c not in all_cols:
-                    all_cols.append(c)
+        old_df = pl.read_parquet(path)
+        old_rows_before = old_df.height
 
-            def aligned(tbl: pa.Table) -> pa.Table:
-                cols_out: list[pa.Array] = []
-                for c in all_cols:
-                    if c in tbl.column_names:
-                        cols_out.append(tbl.column(c))
-                    else:
-                        cols_out.append(pa.nulls(tbl.num_rows, type=pa.float64()))
-                return pa.Table.from_arrays(cols_out, names=all_cols)
-
-            combined = pa.concat_tables([aligned(old_tbl), aligned(new_tbl)])
-        except Exception as e:
-            log.warning("could not read/combine existing %s: %s — overwriting", path, e)
-            combined = new_tbl
+        # Union on columns. polars' concat(how="diagonal") fills missing
+        # columns with null across either side, without needing strict
+        # schema equality.
+        combined = pl.concat([old_df, new_df], how="diagonal_relaxed")
     else:
-        combined = new_tbl
+        old_rows_before = 0
+        combined = new_df
 
     # Dedup by primary key, keeping the LAST occurrence (new rows win).
-    try:
-        import polars as pl
+    before_dedup = combined.height
+    combined = combined.unique(
+        subset=key_cols, keep="last", maintain_order=True
+    )
+    after_dedup = combined.height
+    if before_dedup != after_dedup:
+        log.info(
+            "deduped %s: %d rows → %d rows (removed %d duplicates)",
+            path.name,
+            before_dedup,
+            after_dedup,
+            before_dedup - after_dedup,
+        )
 
-        df = pl.from_arrow(combined)
-        before = df.height
-        df = df.unique(subset=key_cols, keep="last", maintain_order=True)
-        after = df.height
-        if before != after:
-            log.info(
-                "deduped %s: %d rows → %d rows (removed %d duplicates)",
-                path.name,
-                before,
-                after,
-                before - after,
-            )
-        combined = df.to_arrow()
-    except Exception as e:
-        log.warning("dedup failed for %s: %s — writing without dedup", path, e)
+    # CRITICAL safety check: after dedup, the combined table must have at
+    # least as many rows as the PRE-EXISTING parquet (because dedup only
+    # removes collisions between old and new, and new rows only add). If
+    # the final row count is less than what was on disk, something
+    # pathological happened (schema corruption, partial read) and we
+    # REFUSE to write — better to keep the old file than overwrite it.
+    if after_dedup < old_rows_before:
+        raise RuntimeError(
+            f"refusing to overwrite {path}: merged table has {after_dedup} rows "
+            f"but existing parquet has {old_rows_before} rows. Dedup can only "
+            f"remove duplicates between old and new, so post-merge must be >= "
+            f"old. This indicates a schema or read corruption; the existing "
+            f"parquet is being preserved. Investigate before retrying."
+        )
 
     pq.write_table(
-        combined,
+        combined.to_arrow(),
         path,
         compression="zstd",
         compression_level=3,
@@ -1256,16 +1264,46 @@ def main() -> int:
         log.info("nothing to do — all requested cycles already complete")
         return 0
 
+    # Merge the new run's range with any existing manifest so we preserve
+    # the cumulative record across partial re-runs. Example: first run
+    # covered 2025-12-20..2026-04-11; a retry run covering just 2026-04-11
+    # should still leave the manifest's start/end as the union. Otherwise
+    # validate.py will think only today was expected.
+    existing = read_manifest() or {}
+    existing_dl = existing.get("download", {})
+    merged_start = start_d.isoformat()
+    merged_end = end_d.isoformat()
+    merged_stations = stations
+    merged_fxx = fxx_list
+    if existing_dl:
+        # Union on range
+        if existing_dl.get("start"):
+            merged_start = min(existing_dl["start"], merged_start)
+        if existing_dl.get("end"):
+            merged_end = max(existing_dl["end"], merged_end)
+        # Union on stations and fxx
+        merged_stations = sorted(
+            set(existing_dl.get("stations") or []) | set(stations)
+        )
+        merged_fxx = sorted(
+            set(existing_dl.get("fxx") or []) | set(fxx_list)
+        )
+
     write_manifest(
         initial_manifest(
-            stations=stations,
-            start=start_d.isoformat(),
-            end=end_d.isoformat(),
-            fxx_list=fxx_list,
+            stations=merged_stations,
+            start=merged_start,
+            end=merged_end,
+            fxx_list=merged_fxx,
             parallel=args.parallel,
         )
     )
-    log.info("manifest initialized: %s (status=in_progress)", MANIFEST_PATH)
+    log.info(
+        "manifest initialized: %s (status=in_progress, cumulative range %s..%s)",
+        MANIFEST_PATH,
+        merged_start,
+        merged_end,
+    )
 
     counters = CycleCounters()
     try:
@@ -1293,30 +1331,73 @@ def main() -> int:
     log.info("writing Parquets for %d stations", len(stations))
     write_station_parquets(counters)
 
-    # Populate final manifest.
+    # Populate final manifest with CUMULATIVE state (derived from the parquet,
+    # not just this run's counters). This is the only reliable source of
+    # truth when runs can be partial or overlapping. `downloaded_cycles` is
+    # the actual row count in the station parquet; `failed_cycles` is the
+    # gap between the cumulative range's expected count and what's present.
     doc = read_manifest() or {}
     doc.setdefault("download", {})
-    doc["download"]["completed_at"] = utc_now()
-    doc["download"]["status"] = "complete" if counters.failed == 0 else "failed"
-    doc["download"]["archive_bytes"] = counters.bytes_dl
-    doc["download"]["extracted_bytes"] = sum(
-        p.stat().st_size
-        for p in RAW_DIR.rglob("*.parquet")
-        if p.is_file()
+    dl = doc["download"]
+    dl["completed_at"] = utc_now()
+    dl["archive_bytes"] = counters.bytes_dl
+    dl["extracted_bytes"] = sum(
+        p.stat().st_size for p in RAW_DIR.rglob("*.parquet") if p.is_file()
     )
-    doc["download"]["downloaded_cycles"] = counters.downloaded
-    doc["download"]["failed_cycles"] = counters.failed
+
+    # Derive cumulative downloaded/failed counts from the parquet state.
+    cumulative_downloaded = _count_parquet_cycles(stations)
+    expected_cycles_cumulative = _expected_cycle_count(
+        dl.get("start"), dl.get("end"), dl.get("fxx") or fxx_list
+    )
+    cumulative_failed = max(0, expected_cycles_cumulative - cumulative_downloaded)
+    dl["downloaded_cycles"] = cumulative_downloaded
+    dl["failed_cycles"] = cumulative_failed
+    dl["status"] = "complete" if cumulative_failed == 0 else "failed"
+
     doc["target"] = {
         "raw_dir": TARGET_REL,
         "contents": sorted(
-            p.relative_to(RAW_DIR).as_posix()
-            for p in RAW_DIR.rglob("*.parquet")
+            p.relative_to(RAW_DIR).as_posix() for p in RAW_DIR.rglob("*.parquet")
         ),
     }
     write_manifest(doc)
-    log.info("manifest marked %s", doc["download"]["status"])
+    log.info(
+        "manifest marked %s (cumulative: %d/%d cycles downloaded)",
+        dl["status"],
+        cumulative_downloaded,
+        expected_cycles_cumulative,
+    )
 
     return 0 if counters.failed == 0 else 1
+
+
+def _count_parquet_cycles(stations: list[str]) -> int:
+    """Return the minimum cycle count across the requested stations' hourly
+    parquets. This is the canonical "how many cycles are truly downloaded"
+    number, derived from disk state, not from any run's counters.
+    """
+    import pyarrow.parquet as pq_local
+
+    counts: list[int] = []
+    for sta in stations:
+        path = RAW_DIR / sta / "hourly.parquet"
+        if not path.exists():
+            return 0
+        counts.append(pq_local.read_metadata(path).num_rows)
+    return min(counts) if counts else 0
+
+
+def _expected_cycle_count(
+    start: str | None, end: str | None, fxx_list: list[int]
+) -> int:
+    """Compute total expected cycles for a cumulative (start, end, fxx) range."""
+    if not (start and end and fxx_list):
+        return 0
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    n_days = (end_d - start_d).days + 1
+    return n_days * 24 * len(fxx_list)
 
 
 if __name__ == "__main__":

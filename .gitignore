@@ -71,3 +71,20 @@ __marimo__/
 # multiple Claude sessions run in parallel. Pure runtime state; never commit.
 # See CLAUDE.md Rule 8 and .claude/skills/worktree-first/SKILL.md.
 .main-repo-lock
+
+# Pipeline workspace — scratch dir, entire directory ignored for now
+pipeline-workspace/
+
+# DuckDB spill directory (runtime state from long-running queries)
+.tmp/
+
+# Local-only scaffolding for the 4-role coding pipeline (architect /
+# implementer / reviewer / tester). Kept on disk for experimentation
+# but intentionally NOT committed — the user hasn't locked in a
+# coding-pipeline structure yet. Re-evaluate and commit if/when the
+# pattern settles.
+.claude/agents/architect.md
+.claude/agents/implementer.md
+.claude/agents/reviewer.md
+.claude/agents/tester.md
+.claude/skills/pipeline/
