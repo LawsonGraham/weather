@@ -94,6 +94,16 @@ REQUIRED_DISK_GIB = 5  # we only persist ~tens of MB; this is purely a sanity ch
 STATIONS: dict[str, tuple[float, float]] = {
     "KNYC": (40.7794, -73.9692),   # NYC Central Park
     "KLGA": (40.7772, -73.8726),   # LaGuardia
+    "KATL": (33.6367, -84.4281),   # Atlanta Hartsfield-Jackson
+    "KDAL": (32.8471, -96.8518),   # Dallas Love Field
+    "KSEA": (47.4502, -122.3088),  # Seattle Sea-Tac
+    "KORD": (41.9742, -87.9073),   # Chicago O'Hare
+    "KMIA": (25.7959, -80.2870),   # Miami International
+    "KLAX": (33.9425, -118.4081),  # Los Angeles International
+    "KSFO": (37.6213, -122.3790),  # San Francisco International
+    "KHOU": (29.6454, -95.2789),   # Houston Hobby
+    "KAUS": (30.1975, -97.6664),   # Austin-Bergstrom
+    "KDEN": (39.8561, -104.6737),  # Denver International
 }
 
 # --- variable selection ---------------------------------------------------- #
