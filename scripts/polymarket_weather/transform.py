@@ -803,6 +803,12 @@ def main() -> int:
 
     explicit = [s.strip() for s in args.slugs.split(",")] if args.slugs else None
     slugs = select_slugs(args.slugs_file, city=args.city, explicit=explicit, limit=args.limit)
+    # Only process slugs whose gamma JSON was actually downloaded
+    before = len(slugs)
+    slugs = [s for s in slugs if (GAMMA_DIR / f"{s}.json").exists()]
+    if len(slugs) < before:
+        log.info("filtered %d → %d slugs (skipped %d with no gamma JSON on disk)",
+                 before, len(slugs), before - len(slugs))
     log.info(
         "selected: %d slugs (city=%r limit=%s resolution=%ds)",
         len(slugs),
