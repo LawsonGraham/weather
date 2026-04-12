@@ -4,9 +4,89 @@ date: 2026-04-11
 related: "[[2026-04-11 Real-book replay invalidates sell-pop edge]], [[2026-04-11 First pass 1-min price data exploration]], [[Polymarket CLOB WebSocket]], [[Polymarket]]"
 ---
 
-# Near-resolution ladder-BID arbitrage (VERIFIED, 2026-04-11)
+# Near-resolution ladder-BID arbitrage — RETRACTED 2026-04-11
 
-**Status**: **first real tradable edge identified in this project.**
+## ⚠️ RETRACTION AT HEAD (expT slippage correction)
+
+Slippage-aware + fee-aware re-check invalidates the edge. Two
+compounding errors in every prior estimate:
+
+1. **Fees were assumed zero.** Real fee on weather = `C × 0.05 × p × (1-p)`.
+   Peaks at p=0.5 — exactly the active-bucket regime the arb targets.
+2. **Prices were 1-second blips.** The "$0.89 × 5 shares on 60-61f" I
+   cited in expI came from a sec_grid ASOF-last-within-2s aggregation
+   that picked up a 1-second spike. The real stable top-of-bid 3 seconds
+   earlier was $0.85 × 1.39 shares.
+
+### Post-correction P&L on the canonical "profitable" arbs
+
+**april-11 20:12:10** (near-resolution, 4 live buckets):
+
+| size | receipts | fees   | payout | net        |
+|------|----------|--------|--------|------------|
+| 1    | $0.98    | $0.012 | $1.00  | **-$0.035**|
+| 5    | $4.78    | $0.064 | $5.00  | **-$0.287**|
+| 21   | $19.73   | $0.275 | $21.00 | **-$1.541**|
+
+No profitable size exists. Size 21 walks 60-61f from $0.85 → $0.815
+blended across four levels of depth.
+
+**april-12 23:15:20** (11 buckets at sum_bid=1.011):
+
+| size | net/share | note |
+|------|-----------|------|
+| 1    | -$0.0257  | smallest size still loses |
+| 10   | -$0.0343  | |
+| 500  | -$0.2249  | per-share loss gets WORSE as size grows |
+
+The 54-55f leg has only 1.22 shares at $0.38 before walking to $0.37
+then $0.36, so size compounds slippage on that leg.
+
+**Break-even for a 5-share × 11-bucket full sell**: sum_bid ≥ ~1.046
+after slippage + fees. From expP's 90-window histogram, **maybe 1-2
+ever crossed this threshold.**
+
+### Why the competitor bot exists if the taker arb doesn't pay
+
+1. **Colocation / privileged API access** — the 0.4 ms batched burst
+   we observed at 23:15:21 UTC suggests they catch 1-second blips a
+   remote async executor cannot.
+2. **Some observed "arbs" were directional trades**, not risk-free.
+   Selling 10 of 11 april-12 buckets at sum_bid=0.701 is a bet that
+   the excluded bucket wins — EV-positive if the bettor correctly
+   identifies mispricing, NOT a risk-free arb.
+
+### Retracted items from this synthesis
+
+- "First verified edge" → **retracted**. Artifact of zero-fee + blip
+  price assumptions.
+- "$5-30/day NYC" / "$40-240/day at 8 cities" capacity → **retracted**.
+  Realistic taker-arb net is near $0.
+- "Priority-0 implementation" → **retracted**. Deprioritize build.
+- "Phase 1-5 roadmap" → **retracted**.
+- "Compete at 3-5 share size below existing 7-share bot" → **retracted**.
+  Smaller sizes don't fix the structural fee + slippage issue.
+
+### What actually remains
+
+1. **Strategy D V1** (directional, buy +2 at 16 EDT): still works, and
+   is actually MORE profitable than the backtest claimed because fees
+   at p=0.15 are ~0.6% (not 2% as assumed). Per-trade PnL ~$3.40.
+2. **Maker-rebate market-making**: 25% of taker fees redistributed
+   daily. Rough estimate $60-150/day NYC. Multi-month build. See
+   [[2026-04-11 Polymarket fee structure + maker rebate pivot]].
+3. **Watchman + raw JSONL stream** are still valuable as data
+   collection infrastructure for the maker strategy — just not as a
+   signal-to-trade pipeline.
+
+The historical analysis below is preserved for the record but is
+**not actionable**.
+
+---
+
+# [HISTORICAL — DO NOT USE] Near-resolution ladder-BID arbitrage (pre-slippage)
+
+**Status (at time of writing, before retraction)**: first real tradable edge identified in this project.
 Risk-free arb on the bid side of NYC daily-temp ladders in the final
 ~2 hours before resolution. 22 distinct occurrences captured in 65
 minutes of live WS data on april-11. Verified with freshness filter
