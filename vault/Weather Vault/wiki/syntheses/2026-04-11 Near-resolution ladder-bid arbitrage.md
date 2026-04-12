@@ -182,6 +182,93 @@ Prior syntheses:
 - Auto-scale per-leg size based on observed L2 depth
 - Target: $100/day sustained across all NYC+8-city markets
 
+## expP (2026-04-11 latest): FINAL persistence distribution + honest capacity
+
+90 distinct arb windows observed across ~4 hours of tob data. The
+earlier expN/expO divergence was because they were sampling opposite
+ends of a bimodal distribution. Clean picture:
+
+| duration | n  | %   | cumulative |
+|----------|----|-----|------------|
+| 1s       | 30 | 33% | 33%        |
+| 2-3s     | 25 | 28% | 61%        |
+| 4-5s     | 14 | 16% | 77%        |
+| 6-10s    | 13 | 14% | 92%        |
+| 11-20s   |  5 | 6%  | 97%        |
+| 21-40s   |  2 | 2%  | 99%        |
+| 40s+     |  1 | 1%  | 100%       |
+
+- **Median window: 2-3 seconds**
+- **90% are ≤ 10 seconds**
+- **7% persist 20 seconds+** (including one 79-second outlier)
+- **Only 1% last 40+ seconds** — these are rare
+
+**Both expN and expO were right about different subsets.** 33% of
+windows are 1-second blips (the MM correcting fast — expN's observation),
+67% are 2+ seconds (the heavy-tail regime — expO's observation). The
+median is 2-3 seconds, comfortably above the latency floor for a fast
+bot.
+
+### Per-market comparison
+
+| md       | n | p50 | p90 | max | avg peak | max peak | pattern |
+|----------|---|-----|-----|-----|----------|----------|---------|
+| april-11 |43 | 3   |  8  | 12  | 1.018    | 1.084    | MM-walkaway, high margins, tight windows |
+| april-12 |47 | 2   | 15  | 79  | 1.012    | 1.031    | flow-driven, long tail, smaller margins |
+
+Different regimes, different arb mechanisms, different execution windows.
+
+### Hourly density — april-12 hour 23 UTC is the champion
+
+| hour UTC | md     | pct arb time |
+|----------|--------|--------------|
+| 23       | apr-12 | **15.7%**    |
+| 20       | apr-11 | 3.6%         |
+| 19       | apr-11 | 1.1%         |
+| 21       | apr-11 | 0.5%         |
+
+**Hour 23 UTC on april-12 has 1 in 6 seconds in an arb state.** That
+is NOT a near-resolution effect (24h pre-resolution). It's flow-driven
+from an active-trading-hour / baseline-overround interaction.
+
+### FINAL capacity number
+
+With a realistic catch model:
+
+- ~15-22 windows/hour during active flow
+- 60% catchable at 500ms bot latency
+- $0.02-0.08 per catch at 5-20 share sizes
+- **Per city: $0.72 - $8.45/day**
+- **8 cities total: $6-68/day**
+- **Midpoint expectation: ~$30/day gross**
+
+Competition haircut (expO shows at least one other taker eating the
+largest margins):
+
+- **Realistic NET slice: $5-30/day at 8 cities**
+
+### Where this lands vs prior estimates
+
+| estimate | source | $/day (8 cities) |
+|----------|--------|--------------------|
+| expJ optimistic (peak window, 5-10 share) | expJ | $75-150 |
+| expN pessimistic (sub-MM blip) | expN | $40-120 → revised down |
+| **expP honest mid-range** | **expP** | **$6-68 gross, $5-30 net** |
+
+The honest answer is **$5-30/day in our realistic slice after competition**.
+Small in absolute terms, but stacks with other strategies, needs minimal
+capital (<$50 per cycle), and runs fully automated with no directional
+risk.
+
+### Rule-of-thumb going forward
+
+**Wait for N ≥ 50 windows before committing to an arb-capacity number.**
+Early estimates are dominated by whichever sample the observer saw first:
+expJ saw the peak window, expN saw a blip, expO saw a linger. Only at
+N=90 does the distribution become visible.
+
+---
+
 ## expO (2026-04-11 even later): CORRECTS expN — 50-second arb + visible taker competition
 
 expN was wrong. The 23:04:28 "1-second blip" was an outlier. The watchman
