@@ -47,6 +47,31 @@ Full list in [[2026-04-11 Polymarket schema corrections]]. Highlights:
 - `scripts/polymarket_weather/transform.py` — raw JSON → Parquet (markets, fills, prices) under `data/processed/polymarket_weather/`
 - `scripts/polymarket_weather_slugs/download.py` — refreshes the slug catalog (see [[Polymarket weather market catalog]])
 
+## Fee structure (weather markets)
+
+**Per-fill fee formula**: `fee_usdc = C × 0.05 × p × (1 - p)`
+
+- C = shares traded; feeRate = 0.05 for weather (also Economics, Culture, Other)
+- p(1-p) multiplier peaks at p=0.5 (1.25% of notional max); edge prices ≤0.05% of notional
+- Paid by the **taker** side of every fill
+- **25% of fees are redistributed to makers daily as a rebate** (Maker Rebates Program)
+- WS `last_trade_price` events carry `fee_rate_bps = 1000` (headline 10% × p(1-p))
+
+**Consequence for arb strategies**: risk-free ladder-bid arbs need `sum_bid > ~1.036` on a
+5-share full-ladder sell to cover fees. Only ~5% of observed arb windows cross this. See
+[[2026-04-11 Polymarket fee structure + maker rebate pivot]].
+
+**Consequence for market-making**: MM path earns ~$0.015/fill in rebates at p≈0.4. Over 42
+NYC slugs × ~100 fills/day, that's ~$60/day in rebates alone, ~$150/day combined with
+spread capture. ~10-20× the taker-arb capacity.
+
+## Batched orders
+
+Polymarket CLOB supports **batched order submission**: `POST /orders` accepts an array
+of up to **15 orders per request**. Order types: GTC, FOK, GTD, **FAK** (fill-and-kill).
+Auth requires 5 headers: POLY_API_KEY, POLY_ADDRESS, POLY_SIGNATURE, POLY_PASSPHRASE,
+POLY_TIMESTAMP. Supported in py-clob-client.
+
 ## Rate limits / pagination
 
 - Goldsky subgraph paginates `OrderFilledEvents` at 1000 per page; walk forward with `skip=0, 1000, 2000, …`, stop when a page returns < 1000 rows
