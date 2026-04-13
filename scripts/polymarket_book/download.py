@@ -87,11 +87,16 @@ def _setup_logging() -> None:
 # --- catalog --------------------------------------------------------------- #
 
 
-def load_open_slugs(city: str, include_closed: bool, max_slugs: int | None) -> list[dict]:
-    """Read open NYC daily-temp slugs from the local processed parquet."""
+def load_open_slugs(city: str | None, include_closed: bool, max_slugs: int | None) -> list[dict]:
+    """Read open daily-temp slugs from the local processed parquet.
+
+    If city is None or 'all', loads slugs for ALL cities.
+    """
     con = duckdb.connect()
-    where = ["weather_tags ILIKE '%Daily Temperature%'", f"city = '{city}'",
+    where = ["weather_tags ILIKE '%Daily Temperature%'",
              "yes_token_id IS NOT NULL", "no_token_id IS NOT NULL"]
+    if city and city.lower() != "all":
+        where.append(f"city = '{city}'")
     if not include_closed:
         where.append("closed = false")
     where_sql = " AND ".join(where)
@@ -235,7 +240,8 @@ def write_manifest(slugs: list[dict]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=DESCRIPTION)
-    ap.add_argument("--city", default=DEFAULT_CITY)
+    ap.add_argument("--city", default="all",
+                    help="City filter, or 'all' for all US cities (default: all)")
     ap.add_argument("--include-closed", action="store_true")
     ap.add_argument("--max-slugs", type=int, default=None)
     args = ap.parse_args()

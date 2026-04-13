@@ -69,19 +69,20 @@ def _setup_logging() -> None:
     log.setLevel(logging.INFO)
 
 
-def load_open_nyc_slugs(city: str = DEFAULT_CITY) -> list[dict]:
-    """Read open NYC daily-temp slugs + YES token IDs."""
+def load_open_nyc_slugs(city: str = "all") -> list[dict]:
+    """Read open daily-temp slugs + YES token IDs for one or all cities."""
     con = duckdb.connect()
     today_iso = datetime.now(UTC).strftime("%Y-%m-%d")
+    city_filter = f"AND city = '{city}'" if city and city.lower() != "all" else ""
     rows = con.execute(f"""
         SELECT slug, yes_token_id, no_token_id, end_date,
-               regexp_extract(slug, 'nyc-on-([a-z]+-[0-9]+-[0-9]+)', 1) AS md
+               city || '/' || regexp_extract(slug, '-on-([a-z]+-[0-9]+-[0-9]+)', 1) AS md
         FROM 'data/processed/polymarket_weather/markets.parquet'
-        WHERE city = '{city}'
-          AND weather_tags ILIKE '%Daily Temperature%'
+        WHERE weather_tags ILIKE '%Daily Temperature%'
           AND closed = false
           AND yes_token_id IS NOT NULL
           AND no_token_id IS NOT NULL
+          {city_filter}
         ORDER BY ABS(DATE_DIFF('day', CAST('{today_iso}' AS DATE), CAST(end_date AS DATE))) ASC
     """).fetchall()
     return [{"slug": r[0], "yes_token_id": r[1], "no_token_id": r[2],
