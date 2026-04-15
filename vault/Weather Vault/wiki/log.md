@@ -99,3 +99,16 @@
 - Concepts touched: [[METAR]], [[ASOS 1-minute]], [[Polymarket weather market catalog]]
 - Contradictions flagged: entry-hour finding (16–18 EDT optimal) supersedes the 12 EDT anchor from the iter-10 synthesis — not a data contradiction, a refinement from extended hour sweep. Cost model correction (mid == ask) supersedes the placeholder cost assumption in the iter-10 chain and roughly doubles all previously reported Strategy D PnL headlines.
 - Index updated under Syntheses
+
+## [2026-04-14] backtest | Strategy D retracted in clean IS/OOS holdout
+
+- Page: wiki/syntheses/2026-04-14 Strategy D does NOT replicate in clean temporal holdout.md
+- Pre-registered 2/3-1/3 temporal split: IS Mar 11-31 (126 usable MDs), OOS Apr 1-10 (102 usable MDs), 11 US cities, entry 20:00 UTC, 1 share/trade, fee `C × 0.05 × p × (1-p)`
+- **Result**: NONE of 9 pre-registered strategies (S0-S4) survive OOS. Key: S1 +2°F offset (Strategy D V1 equivalent) = -$0.028/trade IS → -$0.086/trade OOS. Exploratory market-fav−1 strategy had IS t=+2.23 → OOS t=+0.02 (100% edge decay).
+- NBS forecast bias per-city in IS: 10 of 11 cities show NBS over-forecasts (opposite of prior "warm bias" thesis). Chicago the only underforecast (+1.5°F).
+- Depth data from book recorder starts 2026-04-13 — post-OOS window. Indicative capacity at fav prices ~$500-1000/trade; thinner at tail buckets. No direct measurement for backtest period.
+- Actionable: **stop paper-trading Strategy D** (prior deployment claim invalid); re-focus on maker-rebate + fee-structure microstructure edges; retrain daily_max_model without leakage
+- Wiki index updated: Strategy D retraction pinned at top of Syntheses
+- Branch: `wt/backtest-v2`; code + data at `notebooks/experiments/backtest-v2/` + `data/processed/backtest_v2/`
+- Contradictions: supersedes all claims in [[2026-04-11 Strategy D deployment refinements]] for Mar 11+ sample; the geographic OOS in [[out_of_sample_validation.md]] tested portability, not persistence — leaves the period-decay gap now measured here
+
