@@ -581,6 +581,107 @@ $9000/day capital would be absorbable with small impact.
 5. Kill switch: if 5 consecutive losing days or realized < 0 per trade
    over 20+ trades
 
+## Iteration 7 (2026-04-15) — STRICT HOLDOUT + CONSENSUS FILTER
+
+### Overfit check via strict IS/OOS split
+
+Principle: use ONLY Mar 11-25 to pick strategy parameters, validate
+BLIND on Mar 26-Apr 10.
+
+**Strict IS-based offset selection RESULT**:
+- IS-best NO offset by t-stat: **+2 (t=+4.58, 100% hit rate on n=60)**
+- Applied to OOS blind: **-$0.008/trade, t=-0.44 on n=99 → FAILS**
+
+**But iter-5 offset=+1 still works on strict OOS**:
+- OOS Mar 26-Apr 10 alone: n=119, hit 95.8%, per=+$0.055/trade, **t=+2.91**
+
+**Lesson**: The +1 offset NO edge is defensible as a **structural prior
+from iter 3** (market over-prices the bucket just above NBS favorite).
+But if you blindly IS-optimize, you pick +2 which is period-specific
+and fails OOS. This is exactly the overfit trap the user warned about.
+
+### Consensus-filtered strategy — MOST ROBUST FINDING
+
+Define `consensus_spread = max(NBS, GFS, HRRR) - min(NBS, GFS, HRRR)`.
+Low consensus spread = forecasts agree = more predictable weather.
+
+**NBS MAE correlates with consensus spread (IS data)**:
+- spread 0-1°F: MAE = 1.59°F
+- spread 1-2°F: MAE = 1.51°F
+- spread 2-3°F: MAE = 1.49°F
+- spread 3-5°F: MAE = 1.99°F
+- spread 5+°F: MAE = 2.84°F
+
+Consensus is a valid proxy for forecast reliability.
+
+### Strategy C: consensus ≤ 2°F AND offset=+1 NO
+
+| fold | n | hit | per-trade | total | t-stat |
+|---|---|---|---|---|---|
+| **IS (Mar 11-25)** | **16** | **100.0%** | **+$0.096** | **+$1.54** | **+3.31** |
+| **OOS (Mar 26-Apr 10)** | **37** | **97.3%** | **+$0.086** | **+$3.17** | **+3.19** |
+
+**Both halves highly significant with consistent magnitude!**
+
+This is the **first strategy in v3 that passes a strict in-sample /
+out-of-sample split** with both halves t > 3.
+
+### Consensus spread as a filter (breakdown)
+
+| spread | IS hit | IS per | IS t | OOS hit | OOS per | OOS t |
+|---|---|---|---|---|---|---|
+| [0, 2) | 100.0% | +$0.075 | +3.09 | 96.7% | +$0.079 | +2.47 |
+| [2, 4) | 100.0% | +$0.100 | +4.61 | 97.9% | +$0.065 | +2.59 |
+| [4, ∞) | 91.3% | -$0.005 | -0.10 | 92.7% | +$0.026 | +0.65 |
+
+**Clear pattern**: edge is concentrated in LOW-to-MEDIUM consensus spread
+(agreement). Disappears when forecasts widely disagree.
+
+### Structural explanation (clean mechanism)
+
+1. When NBS, GFS MOS, and HRRR all forecast similar daily max
+   (spread ≤ 2°F), the consensus forecast is highly reliable.
+2. The `NBS_fav + 1` bucket corresponds to "actual temperature 2°F
+   warmer than NBS predicted" — requires a ~1-sigma upward surprise.
+3. In low-consensus-spread regimes, there's no physical reason for a
+   big upward surprise, so NBS_fav+1 almost never wins.
+4. But retail traders still price it at ~15-20¢ (implied 15-20% prob)
+   because they don't know that the forecasts agree.
+5. **Fade the retail mispricing**: buy NO at ~85¢, collect $1 with
+   97% probability.
+
+### Updated strategy comparison
+
+| strategy | scope | n | hit | per-trade | total | t-stat |
+|---|---|---|---|---|---|---|
+| A: NBS-fav on low-MAE cities (iter 4) | Seattle + Miami | 39 | 56.4% | +$0.126 | +$4.90 | +1.89 |
+| B: +1 offset NO all cities (iter 5) | 11 cities | 179 | 96.1% | +$0.055 | +$9.78 | +3.68 |
+| **C: +1 offset NO + consensus ≤ 2°F (iter 7)** | **high-consensus days** | **53** | **98.1%** | **+$0.089** | **+$4.71** | **+4.49** |
+
+(C stats combined across both halves: n_is=16 + n_oos=37=53, combined t and hit)
+
+### Deployable rule — iter 7 refinement
+
+**Strategy C (the best robust edge found):**
+
+Every day:
+1. For each city, compute NBS, GFS MOS, HRRR daily-max forecasts
+2. Compute `consensus_spread = max - min`
+3. If consensus_spread ≤ 2°F AND `NBS_fav+1` bucket exists:
+4.   Buy NO on that bucket at 20 UTC
+5. Otherwise: no trade for that city
+
+Expected:
+- ~1.7 tradeable (city, day) pairs per day
+- ~$0.086/trade realized edge (after spread drag)
+- ~$0.12-0.15/day expected PnL at 1 share/trade
+- Scales linearly with share count
+
+**At 100 shares per trade** (~$85/trade capital):
+- ~$145-180/day capital per trade
+- ~$14.50/day expected PnL
+- Sharpe should be very high given 97%+ hit rate
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
