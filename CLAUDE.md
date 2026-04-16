@@ -185,6 +185,21 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 - HRRR ensemble (HRRRx, 36 members) provides a free empirical distribution — use it.
 - **Time-based splits only.** Never random train/test splits on time-series data.
 
+## Strategy conventions
+
+Deployable trading strategies live at `strategies/<name>/` at the repo root — one folder per distinct edge. Each folder MUST contain:
+
+- `STRATEGY.md` — thesis, signal definition, execution rules, backtest results with IS/OOS split, capacity analysis, risk/kill-switches, deployment checklist. Written in normal prose (not caveman).
+- `recommender.py` — given today's data, emits recommended trades (does NOT submit orders).
+- `backtest.py` — reproduces the historical stats printed in `STRATEGY.md`.
+
+Index all active strategies from `strategies/README.md`. A retracted strategy should be removed (per Rule 6) with the retraction captured as a `wiki/syntheses/` page rather than left as dead code.
+
+Separation of concerns:
+- **`scripts/<source>/`** — data ingestion / transformation
+- **`notebooks/experiments/<topic>/`** — exploratory research where strategies are discovered
+- **`strategies/<name>/`** — deployable artifact once an edge has passed a clean IS/OOS holdout
+
 ## Language and tooling
 
 **Python is the primary language for this project.** The weather and ML ecosystems are Python-first — Herbie (HRRR), xarray/cfgrib (GRIB2), metar, arm-pyart (NEXRAD), SynopticPy, scikit-learn, xgboost, lightgbm, statsmodels are all Python-only or Python-dominant. Committing to Python removes an entire class of subprocess-bridge headaches.
@@ -301,6 +316,10 @@ weather/
 │   ├── transform.py              # stage 2 (optional): raw → data/{interim,processed}/
 │   └── validate.py               # optional post-run sanity check
 ├── notebooks/                    # Marimo reactive notebooks (expl_, val_, calib_, ...)
+├── strategies/<name>/            # deployable trading strategies
+│   ├── STRATEGY.md               # thesis, execution rules, backtest, risks
+│   ├── recommender.py            # live: today's recommendations (no order submission)
+│   └── backtest.py               # reproduces historical stats
 ├── weather-market-slugs/         # committed slug catalogs (carveout from no-CSV rule)
 ├── pyproject.toml                # deps + ruff + pyright + pytest config
 ├── .python-version               # pinned Python (3.13)
