@@ -45,7 +45,7 @@ STATIONS = list(TZ.keys())
 # IS / OOS boundaries (LOCKED before peeking at model performance)
 IS_END = date(2026, 2, 28)
 START_DATE = date(2025, 12, 1)
-END_DATE = date(2026, 4, 11)
+END_DATE = date(2026, 4, 14)
 
 
 def _con() -> duckdb.DuckDBPyConnection:

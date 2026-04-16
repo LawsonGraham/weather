@@ -512,6 +512,75 @@ for periodic churn).
 5. **Regime change**: if retail markets become more efficient, or
    if NBS becomes unbiased, edge could shrink rapidly.
 
+## Iteration 6 (2026-04-15) — Real-ask validation
+
+### Spread analysis from book JSONL (Apr 13-14)
+
+Parsed 97 slugs with book data, sampled L2 snapshots per slug, extracted
+best bid/ask and spread statistics.
+
+**Typical YES spread at favorite prices (mid $0.30-0.80)**:
+- Median: 0.7¢
+- Mean: 1.5¢
+- Tightest: 0.1¢ (many at 0.1¢ tick floor)
+- Widest: 10.5¢ (thin San Francisco market)
+
+**Impact on +1 offset NO strategy**:
+- Backtest used YES midpoint; paying NO-ask (= 1 - YES-bid) costs ~half
+  the spread extra
+- Expected edge: $0.055 - $0.005 = **$0.050/trade** realistic
+- Worst case (pay full spread): $0.055 - $0.015 = $0.040/trade
+- **Edge robustly survives spread costs**
+
+**Impact on Strategy A (low-MAE NBS-fav buy YES)**:
+- Backtest: $0.126/trade → realistic $0.118/trade
+
+### Apr 11 fresh-data holdout
+
+Tried to test strategy on Apr 11 (resolved after strategy discovery),
+but found: **NBS forecasts on Apr 11 were at the MAX bucket for
+every city** (ATL=85°F, DAL=81°F, etc. — unseasonably warm). No +1
+offset buckets existed to fade.
+
+This is a natural strategy limitation, not a failure: on days when
+NBS pegs near the max bucket, strategy correctly goes risk-off.
+Over the Mar 11-Apr 10 backtest, 179/341 possible (city, date) pairs
+had a valid +1 offset bucket — 52% conversion.
+
+### Book data confirmation
+
+From Apr 13 snapshots on the +1-offset-equivalent buckets (e.g. Seattle's
+"64 or higher" bucket), book depth within 2¢ of best ask is typically
+1000-16000 shares. At ~6 trades/day with ~$90 NO price × 100 shares =
+$9000/day capital would be absorbable with small impact.
+
+### Updated viability assessment for Strategy B
+
+| metric | value |
+|---|---|
+| Backtest edge (mid) | +$0.055/trade |
+| Realistic edge (half-spread) | +$0.050/trade |
+| Worst-case edge (full spread) | +$0.040/trade |
+| Sample size | n=179 |
+| Both OOS halves significant | Yes (t=2.24, t=2.99) |
+| Per-city consistency | 7/11 cities with 100% hit |
+| Structural mechanism | Retail prob spreading + NBS ≈ unbiased |
+| Real-ask validated | Partially (spread analysis, no resolved bucket test) |
+| Capacity | $5K-10K/day absorbable |
+| **Deployable?** | **Yes, paper-trade first** |
+
+### Recommended paper deployment
+
+1. Every day, for each city where NBS forecast is at least 2°F below
+   the highest available bucket (ensures +1 exists):
+   - At 20 UTC, buy NO on the bucket centered at NBS_fav + 1
+   - Stake $10-20 per trade (small to start, build up)
+2. Track actual fill vs theoretical midpoint
+3. After 2 weeks, compare realized PnL to backtest expectation
+4. If realized >50% of backtest edge, scale up
+5. Kill switch: if 5 consecutive losing days or realized < 0 per trade
+   over 20+ trades
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
