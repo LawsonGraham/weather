@@ -257,6 +257,96 @@ buckets (7%), market wins more often (71%).
 **Actionable framing**: the model may be adding ~3% of marginal value
 by picking between adjacent buckets when the market favorite is ambiguous.
 
+## Iteration 3 (2026-04-15, continued)
+
+### Confidence filter on max model_p
+
+Tested multiple filters (top-1 minus top-2 probability, NBS spread,
+bucket_gap from market fav). Best finding:
+
+**`bucket_gap=0`** (buy market fav iff per-station model also picks it):
+- Full Mar 11-Apr 10: n=79, hit 72.2%, per=+$0.078/trade, t=+1.56
+- **But period-concentrated**: Wk14 (Mar 29-Apr 4, n=21) had 90.5% hit,
+  +$0.239/trade. Without Wk14: per-trade drops from $0.078 to $0.019.
+- Cumulative PnL: flat through Mar 25, then +$6.32 in last 15 days.
+
+Same "hot period" signature as S4 from iter 1. Not robust.
+
+### Sign-of-NBS-error classifier
+
+Trained binary classifier (GBC) on `sign(actual - NBS)` — 75-81% OOS
+accuracy on high-confidence predictions. **Genuinely significant
+predictive signal** — model can tell which way NBS is likely wrong.
+
+Strategy (shift NBS fav ±1 bucket based on sign):
+- Mar 11-25: +$0.096/trade, t=+1.44, n=50 ← works
+- Mar 26-Apr 10: -$0.010/trade, t=-0.27, n=98 ← fails
+
+**Inverted pattern from bucket_gap=0** — first half works, second half doesn't.
+Sign-classifier edge requires regime where market UNDER-anchors on NBS
+(Mar 11-25); when market fully prices in NBS + consensus (Mar 26-Apr 10),
+edge vanishes.
+
+### Baseline: offset from NBS favorite (no model)
+
+| offset | n | hit | per-trade | total | t-stat | avg_price |
+|---|---|---|---|---|---|---|
+| -3 | 46 | 23.9% | +$0.028 | +$1.28 | +0.53 | $0.206 |
+| -2 | 100 | 24.0% | -$0.010 | -$0.98 | -0.27 | $0.243 |
+| **-1** | 158 | 39.2% | **+$0.013** | +$2.07 | +0.40 | $0.371 |
+| **0** (NBS fav) | 186 | 39.2% | **+$0.022** | +$4.12 | +0.74 | $0.362 |
+| **+1** | 156 | 10.3% | **-$0.071** | **-$11.02** | **-3.52** | $0.168 |
+| +2 | 79 | 6.3% | -$0.018 | -$1.46 | -0.73 | $0.079 |
+
+**Key finding**: buying ABOVE NBS favorite (offset=+1 or +2) is
+**strongly negative** across the full 180-day sample (t=-3.52 at
+offset=+1). Confirms v2 result that Strategy D V1 (buy +2°F above fav)
+was an unreliable edge.
+
+**NBS favorite itself (offset=0)** has mild positive edge: +$0.022/trade.
+**NBS fav - 1 (offset=-1)** has barely-positive edge: +$0.013/trade.
+
+### Per-city offset=-1 — Texas cities stand out
+
+| city | n | hit | per-trade | total | t | NBS bias (iter 2) |
+|---|---|---|---|---|---|---|
+| **Houston** | 13 | **84.6%** | **+$0.218** | +$2.84 | **+2.75** | -1.71°F (over-fcst) |
+| **Austin** | 13 | 53.8% | +$0.180 | +$2.35 | +1.69 | -1.35°F (over-fcst) |
+| Miami | 7 | 57.1% | +$0.076 | +$0.53 | +0.38 | -1.07°F |
+| Atlanta | 14 | 50.0% | +$0.075 | +$1.05 | +0.55 | -0.10°F |
+| Denver | 13 | 30.8% | +$0.007 | +$0.10 | +0.06 | -2.53°F |
+| Dallas | 22 | 36.4% | -$0.019 | -$0.43 | -0.20 | -1.73°F |
+| LA | 14 | 35.7% | -$0.017 | -$0.24 | -0.20 | -2.06°F |
+| SF | 15 | 26.7% | -$0.034 | -$0.52 | -0.28 | +0.12°F |
+| Seattle | 26 | 26.9% | -$0.060 | -$1.56 | -0.82 | -0.11°F |
+| NYC | 12 | 25.0% | -$0.109 | -$1.30 | -1.04 | +0.04°F |
+| Chicago | 9 | 22.2% | -$0.083 | -$0.74 | -0.75 | +1.51°F |
+
+**Pattern**: cities with significant NBS over-forecast bias (-1.0°F to
+-2.1°F: HOU, AUS, MIA, ATL) show positive per-trade edge on offset=-1.
+Chicago (NBS UNDER-forecasts +1.51°F) is negative on offset=-1.
+NBS-neutral cities (SFO, SEA, NYC) are mixed.
+
+**This is the most robust structural insight of v3**: per-city NBS bias
+calibration from Dec-Feb training data partially carries into Mar-Apr
+trading. But sample sizes per city (n=9-26) are tiny for confidence.
+
+### Synthesis of iteration 3
+
+1. The weather model ensemble genuinely predicts better than NBS (13%
+   MAE improvement) — but the market prices don't reflect enough
+   mispricing for the model to extract a clean edge OOS.
+2. **Several "edges" (bucket_gap=0, sign classifier) are regime-dependent**
+   — they each work in opposite halves of the OOS window. This is a
+   fingerprint of noise dominating small samples, not genuine alpha.
+3. The ONLY structurally-grounded finding is **per-city NBS bias
+   calibration** — cities where NBS over-forecasts in training data
+   continue to benefit from offset=-1 in OOS. Houston + Austin are the
+   strongest signals but each has only 13 trades.
+4. **Offset=+1 is a consistent FADE-EDGE** (don't buy above NBS fav)
+   across cities, periods, and samples. This is the inverse of the
+   (failed) Strategy D V1.
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
