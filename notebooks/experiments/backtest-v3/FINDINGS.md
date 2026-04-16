@@ -347,6 +347,74 @@ trading. But sample sizes per city (n=9-26) are tiny for confidence.
    across cities, periods, and samples. This is the inverse of the
    (failed) Strategy D V1.
 
+## Iteration 4 (2026-04-15)
+
+### Per-city NBS bias calibration (attempted)
+
+Used IS (Dec-Feb) per-city NBS bias to pick per-city integer offset.
+
+**IS → OOS bias DRIFT across many cities**:
+- Denver: IS +0.23 → OOS -1.83 °F
+- LA: IS 0.00 → OOS -1.86 °F
+- Houston: IS -0.74 → OOS -1.12 °F
+- Dallas: IS -0.01 → OOS -1.21 °F
+
+Most IS biases round to offset=0, so per-city calibration degenerated
+to "buy NBS fav" for most cities. Per-city offset strategy total:
++$0.43 on 182 trades, t=+0.08. Essentially break-even.
+
+Per-city SHIFTED (fractional) version slightly better: +$2.84 on 182
+trades, t=+0.52. Still weak.
+
+### Seattle deep dive: the real structural signal
+
+Seattle's NBS MAE is lowest of all cities (1.28 IS, 1.20 OOS — most
+stable). Small daily weather variance (std 6.7°F OOS) means forecasts
+are more accurate, and market slightly underprices the NBS favorite.
+
+Seattle offset=0 (NBS fav) alone: **61.5% hit, +$0.167/trade, t=+1.82
+(n=26)**. Within-OOS both halves positive.
+
+### FINAL STRATEGY (v3 finding): NBS-accurate-cities filter
+
+**Simple rule**:
+1. On IS (Dec 1 - Feb 28), compute per-city NBS MAE
+2. Select cities with MAE ≤ 1.5°F → this identifies **Seattle + Miami**
+3. On those cities only, **buy NBS favorite** (no model needed)
+4. Stake 1 share per trade
+
+Results:
+- Full Mar 11-Apr 10: **n=39, hit 56.4%, per=+$0.126/trade, t=+1.89**
+- Mar 11-25 half: n=16, +$0.085/trade, t=+0.79
+- Mar 26-Apr 10 half: n=23, +$0.154/trade, t=+1.79
+- Per-city: Seattle dominates (+$4.33), Miami marginal (+$0.57)
+- Avg entry price: $0.43
+
+**Why this is the cleanest v3 finding**:
+- City selection based only on IS data (no leakage)
+- Strategy is `buy NBS fav` — trivially simple, no fitting
+- Both halves of OOS positive (no period concentration)
+- t=+1.89 on 39 trades is marginal but consistent
+
+**Caveats**:
+- Small sample (39 trades). 95% CI on per-trade PnL is wide.
+- Cutoff threshold (1.5°F) is somewhat arbitrary — at 2.5°F threshold
+  (8 cities), per-trade drops to +$0.009.
+- Miami contribution is weak; if Seattle is genuinely unique the
+  strategy is really a Seattle-only play (n=26 is very small).
+
+### Deployable rule (tentative, needs 2-4 more weeks of data)
+
+If we wanted to paper-trade one thing starting today:
+- Every day, for Seattle + Miami's markets, at 20 UTC
+- Buy 1 share of the NBS-favorite bucket
+- Expected PnL: $0.10-0.15 per trade
+- ~11 trades per week (2 cities × ~5 markets/week)
+- ~$1.10-1.65/week paper (tiny but directionally consistent)
+
+Not deployable yet — needs more data, and capacity is limited by
+market liquidity at ~$0.43 price level (probably $100-200 per trade max).
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
