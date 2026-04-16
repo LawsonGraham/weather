@@ -150,6 +150,113 @@ $0.101 (here, filtered).
 
 **Caveat**: IS was only $0.010. The OOS > IS inversion is the red flag.
 
+## Iteration 2 (2026-04-15)
+
+### S4 debug
+Investigated why S4's OOS per-trade ($0.101) was 10x its IS ($0.010). Root
+cause: **it was a period effect, not a model effect.**
+
+- Market-favorite hit rate by week:
+  - IS wk11 (Mar 8-14): 70.8% hit, -$0.035/trade
+  - IS wk12 (Mar 15-21): 64.3% hit, -$0.076/trade
+  - IS wk13 (Mar 22-28): 70.8% hit, +$0.016/trade
+  - IS wk14 (Mar 29-Apr 4, partial): 66.7% hit, +$0.120/trade
+  - **OOS wk14 (Mar 29-Apr 4 the rest): 78.0% hit, +$0.117/trade** ← hot week
+  - OOS wk15 (Apr 5-11): 74.5% hit, +$0.012/trade
+- Model-agreement filter removed only ~7 OOS trades. No model-specific signal.
+- "Edge" was driven by wk14 being unusually kind to favorites.
+
+### Per-station models
+
+Trained 11 independent Ridge regressions, each on its station's 71 IS
+days. Most stations improved over global ensemble:
+
+| station | NBS OOS MAE | Global OOS MAE | Per-station OOS MAE | IS sigma |
+|---|---|---|---|---|
+| ATL | 2.26 | 1.89 | **1.70** | 1.90 |
+| AUS | 1.62 | 1.74 | 1.74 | 1.56 |
+| DAL | 2.07 | 1.64 | 1.86 | 1.50 |
+| DEN | 3.07 | 2.16 | **2.04** | 1.62 |
+| HOU | 1.50 | 1.22 | **1.21** | 1.64 |
+| LAX | 3.24 | 2.06 | **1.68** | 1.06 |
+| LGA | 4.02 | 2.38 | 2.67 | 2.17 |
+| MIA | 1.29 | 1.07 | 1.09 | 0.92 |
+| ORD | 3.20 | 2.57 | **1.95** | 1.93 |
+| SEA | 1.20 | 1.37 | 1.83 | 1.06 |
+| **SFO** | 1.98 | 3.91 | 2.34 | 1.63 |
+
+Per-station helps most at cities where NBS is weak (LAX, ORD, DEN,
+ATL). Global ensemble is better at LGA, DAL, SEA, MIA.
+
+### Simple strategy on per-station model: "buy bucket with max model_p"
+
+Pick the bucket with highest predicted probability under each
+station's model+sigma.
+
+- **IS: n=107, hit 43.0%, per=+$0.036/trade, t=+0.84**
+- **OOS: n=73, hit 46.6%, per=+$0.046/trade, t=+1.02**
+
+**Consistent IS→OOS direction** — unlike S4's inversion.
+
+Per-city OOS breakdown:
+| city | n | hit | per-trade | total |
+|---|---|---|---|---|
+| Atlanta | 9 | 88.9% | +$0.351 | +$3.16 |
+| Dallas | 7 | 85.7% | +$0.309 | +$2.16 |
+| Denver | 6 | 33.3% | +$0.117 | +$0.70 |
+| Miami | 6 | 66.7% | +$0.032 | +$0.19 |
+| SF | 10 | 40.0% | +$0.029 | +$0.29 |
+| Seattle | 10 | 30.0% | +$0.014 | +$0.14 |
+| Chicago | 5 | 40.0% | -$0.067 | -$0.33 |
+| Austin | 7 | 28.6% | -$0.077 | -$0.54 |
+| LA | 7 | 14.3% | -$0.135 | -$0.95 |
+| Houston | 6 | 33.3% | -$0.248 | -$1.49 |
+
+Edge concentrated in ATL + DAL. Both cities are in the group where
+per-station model improves over NBS. LAX/AUS lose despite per-station
+model being decent. Noise dominates at n=6-10 per city.
+
+### Empirical residual distribution approach
+
+Trained residual model (target = actual_max − NBS) on IS, then used the
+empirical distribution of IS residuals to compute bucket probabilities
+(Monte Carlo style — no Normal assumption).
+
+- NBS alone OOS MAE: 2.283
+- NBS + predicted residual OOS MAE: **1.994** (same 13% improvement as global)
+- IS sigma after residual correction: **1.913** (same as Normal assumption)
+
+Strategy: "buy bucket with max empirical model_p":
+- **IS: n=102, hit 45.1%, per=+$0.052/trade, t=+1.22**
+- **OOS: n=68, hit 41.2%, per=+$0.025/trade, t=+0.54**
+
+IS > OOS (the **expected decay pattern** for true edge, opposite of S4).
+But sample is small and t-stat drops from 1.22 to 0.54 — within noise.
+
+### Synthesis of iteration 2
+
+The "max model_p" strategy (pick the bucket the ensemble-model thinks
+most likely, using either per-station or empirical-residual calibration)
+gives consistent:
+- IS per-trade: +$0.036 to +$0.052
+- OOS per-trade: +$0.025 to +$0.046
+- Entry price: ~$0.39 to $0.42 (mid-price buckets, not market favorite)
+- Hit rate: 41-47%
+
+Net edge ≈ 2-5% per trade before fees, 1-4% after. Statistically
+underpowered at current n=68-73 OOS but **directionally consistent
+across multiple modeling choices**. This is the most promising
+finding of v3 so far.
+
+**Key insight**: the model's favorite bucket is within 1 bucket of
+the market favorite 93% of OOS days. Where they agree (gap=0, 45%
+of OOS days), hit rate is 87%. Where they disagree within 1 bucket
+(48% of OOS days), hit rate is still 67%. Where they disagree by 2+
+buckets (7%), market wins more often (71%).
+
+**Actionable framing**: the model may be adding ~3% of marginal value
+by picking between adjacent buckets when the market favorite is ambiguous.
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
