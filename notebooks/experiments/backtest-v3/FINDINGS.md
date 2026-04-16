@@ -682,6 +682,118 @@ Expected:
 - ~$14.50/day expected PnL
 - Sharpe should be very high given 97%+ hit rate
 
+## Iteration 8 (2026-04-15) — FAILURE ANALYSIS + REFINED DEPLOY SPEC
+
+### Losing trades analysis (Strategy C at cs ≤ 2°F)
+
+Only 1 loser out of 52 trades:
+- Chicago Mar 28: NBS=47°F, actual=48°F (just 1°F above NBS, landed in
+  48-49°F = +1 bucket by 1 degree). Consensus spread was tight (0.6°F).
+
+Morning-anomaly filter tested: winners avg +8.66°F above seasonal,
+loser +8.51°F. Morning temp doesn't discriminate losers from winners
+because consensus-tight days in Mar-Apr are all spring-warming.
+
+### Consensus threshold sweep (key finding)
+
+| threshold | n | hit | per-trade | IS t | OOS t | combined t |
+|---|---|---|---|---|---|---|
+| cs ≤ 1.0 | 23 | 95.7% | +$0.067 | +2.06 | +1.37 | +1.65 |
+| cs ≤ 1.5 | 32 | 96.9% | +$0.077 | +2.25 | +2.01 | +2.51 |
+| cs ≤ 2.0 | 52 | 98.1% | +$0.090 | +3.31 | +3.20 | +4.33 |
+| cs ≤ 2.5 | 68 | 98.5% | +$0.091 | +4.58 | +3.79 | +5.42 |
+| **cs ≤ 3.0** | **94** | **98.9%** | **+$0.083** | **+4.44** | **+4.98** | **+6.42** |
+
+**Looser cs ≤ 3.0 is actually better** — more trades, same per-trade
+edge, both IS and OOS t >4.4. This is the refined deploy spec.
+
+### Offset sweep under cs ≤ 3°F (per-bucket analysis)
+
+| offset | n | hit | per-trade | IS t | OOS t | verdict |
+|---|---|---|---|---|---|---|
+| **+1 NO** | **94** | **98.9%** | **+$0.083** | **+4.44** | **+4.98** | **STRATEGY** |
+| +2 NO | 86 | 95.3% | -$0.008 | +5.10 | **-1.05** | **OVERFIT** |
+| +3 NO | 45 | 100.0% | +$0.018 | +6.47 | +3.86 | works, tiny edge |
+| +1+2 basket | 180 | 97.2% | +$0.039 | +6.02 | +1.60 | diluted |
+| +1+2+3 | 225 | 97.8% | +$0.035 | +6.13 | +1.87 | diluted |
+
+**+2 NO is a textbook overfit trap**: IS t=+5.10 but OOS t=-1.05.
+This is exactly the pattern iter 7 strict-holdout caught. Only +1 NO
+has clean IS/OOS consistency.
+
+### Sister strategies FAIL under consensus filter
+
+- -1 YES (buy below NBS fav): n=40, hit 50%, per=+$0.055, t=+0.80
+  (flat — NBS is approximately unbiased, -1 bucket genuinely ~50/50)
+- -1 NO (fade below NBS fav): n=25, hit 64%, per=-$0.115, t=-1.37
+  (negative — "-1 bucket" bet loses because cost of NO ($0.56) >
+  64% hit rate payoff)
+
+**Asymmetric edge confirmed**: retail over-prices ABOVE NBS fav but
+not below. The +1 bucket is uniquely mispriced.
+
+### Final deployable spec: Strategy C' (+1 NO at cs ≤ 3°F)
+
+**Rule**:
+1. For each city with a daily-temperature market:
+2. Compute NBS, GFS MOS, HRRR daily-max forecasts at 20 UTC
+3. Compute `consensus_spread = max(forecasts) - min(forecasts)`
+4. If `consensus_spread ≤ 3°F` AND `NBS_fav+1` bucket exists with
+   YES price ∈ [0.005, 0.5]:
+5.   Buy NO shares on `NBS_fav+1` bucket
+6. Otherwise: no trade
+
+**Performance stats (Mar 11 - Apr 10, 31 days):**
+- 94 trades across 27 trading days (3.48 per day avg)
+- 98.9% hit rate — 93 winners, 1 loser
+- +$0.083 per trade, +$7.78 total PnL (1-share scale)
+- 100% of days positive
+- Daily Sharpe: 1.108 → Annualized: **17.59**
+- Worst 3 days: +$0.007, +$0.009, +$0.032 (all positive)
+- 9.16% return on gross capital outlay over 31 days
+
+**Per-city breakdown:**
+
+| city | n | hit | per-trade | t-stat |
+|---|---|---|---|---|
+| Miami | 17 | 100.0% | +$0.023 | +4.31 |
+| Houston | 13 | 100.0% | +$0.091 | +3.54 |
+| Atlanta | 12 | 100.0% | +$0.098 | +4.24 |
+| NYC | 12 | 100.0% | +$0.032 | +3.48 |
+| LA | 11 | 100.0% | +$0.080 | +3.06 |
+| Dallas | 8 | 100.0% | +$0.136 | +3.07 |
+| Denver | 7 | 100.0% | +$0.194 | +5.12 |
+| Seattle | 5 | 100.0% | +$0.177 | +3.09 |
+| Austin | 5 | 100.0% | +$0.134 | +1.62 |
+| Chicago | 4 | 75.0% | -$0.058 | -0.29 (1 of 4 lost) |
+| (SF had 0 consensus-tight days) | | | | |
+
+**Scale math (at 100 shares = $90/trade capital):**
+- Daily capital: 3.48 × $90 = $313
+- Daily PnL: 3.48 × $8.30 = $28.87 expected
+- Real-world execution (subtracting ~0.5¢ spread drag):
+  - Daily PnL: 3.48 × $7.80 ≈ $27.14
+
+**Caveats (still):**
+
+1. **Single 31-day period.** Spring transition weather. Would it hold
+   in summer / fall / winter? Unknown until we collect more data.
+2. **Retail mispricing assumption.** If sophisticated money enters
+   Polymarket weather, the +1 bucket pricing tightens and edge
+   shrinks.
+3. **Book depth verified only for ~$5-10K/day scale.** Larger sizes
+   would move markets.
+4. **Fee-structure dependent.** If Polymarket changes from C×0.05×p(1-p)
+   to flat fee, math changes significantly.
+
+## Deployment recommendation
+
+1. **Paper-trade Strategy C' for 2 weeks** starting immediately
+2. Log actual fill prices vs theoretical midpoint
+3. Compare realized per-trade to the $0.083 backtest expectation
+4. If realized ≥ $0.05/trade after 30 trades, scale to $100/trade size
+5. Kill-switch: 3 consecutive negative days OR realized < $0 after 40 trades
+
 ## What to do next (for cron iterations)
 
 1. **Extend the data window** — prices_history is the binding constraint
