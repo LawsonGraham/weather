@@ -16,7 +16,7 @@ from pathlib import Path
 import duckdb
 
 from lib.weather.consensus import consensus_spread
-from lib.weather.forecasts import CITY_TO_STATION, get_all_cities
+from lib.weather.forecasts import get_all_cities
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKETS_PATH = REPO_ROOT / "data" / "processed" / "polymarket_weather" / "markets.parquet"

@@ -74,9 +74,9 @@ def check_setup() -> int:
     pk = _get_pk()
     if not pk:
         print("Error: POLYMARKET_PK missing from .env.")
-        print(f"  Copy .env.example to .env and fill POLYMARKET_PK.")
-        print(f"  (If you have an old PK= line from a previous version,")
-        print(f"   rename it to POLYMARKET_PK= — same value works.)")
+        print("  Copy .env.example to .env and fill POLYMARKET_PK.")
+        print("  (If you have an old PK= line from a previous version,")
+        print("   rename it to POLYMARKET_PK= — same value works.)")
         return 2
 
     rpc = os.environ.get("POLYMARKET_RPC") or DEFAULT_RPC
