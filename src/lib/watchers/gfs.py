@@ -21,7 +21,7 @@ IEM_MOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.py"
 
 
 class GFSWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="gfs", interval_seconds=interval_seconds,
                         jitter_seconds=8)
         self._last_probed_max: datetime | None = None

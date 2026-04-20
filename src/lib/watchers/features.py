@@ -25,9 +25,9 @@ INPUT_DIRS = [
 
 
 class FeaturesWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="features", interval_seconds=interval_seconds,
-                        jitter_seconds=20)
+                        jitter_seconds=7)
 
     async def has_new_data(self) -> bool:
         if not FEATURES_PATH.exists():

@@ -26,9 +26,9 @@ HRRR_LATENCY_HOURS = 2  # buffer so we probe cycles that are definitely publishe
 
 
 class HRRRWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="hrrr", interval_seconds=interval_seconds,
-                        jitter_seconds=15)
+                        jitter_seconds=5)
 
     async def has_new_data(self) -> bool:
         cycle = self._expected_latest_cycle()

@@ -29,7 +29,7 @@ IEM_MOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.py"
 
 
 class NBSWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="nbs", interval_seconds=interval_seconds,
                         jitter_seconds=5)
         # Populated by has_new_data() and read by fetch_new_data() so we can

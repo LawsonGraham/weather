@@ -25,9 +25,9 @@ IEM_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 
 
 class METARWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="metar", interval_seconds=interval_seconds,
-                        jitter_seconds=10)
+                        jitter_seconds=5)
         self._last_probed_max: datetime | None = None
 
     async def has_new_data(self) -> bool:

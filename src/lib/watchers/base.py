@@ -5,7 +5,7 @@ Watchers split their work into two methods:
     has_new_data()   — cheap check (HEAD / tiny GET / local mtime)
     fetch_new_data() — heavy pull (full download + transform)
 
-The orchestrator calls `has_new_data()` on a fast cadence (default 60s) and
+The orchestrator calls `has_new_data()` on a fast cadence (default 10s) and
 only invokes `fetch_new_data()` when the probe says upstream has moved.
 That keeps the daemon responsive (seconds of staleness, not minutes) while
 avoiding the ~30-40MB / 30s re-pull each time on unchanged sources.
@@ -91,11 +91,11 @@ class Watcher(ABC):
 
     Parameters:
         name: identifier for logging + state file
-        interval_seconds: probe cadence (default 60s)
+        interval_seconds: probe cadence (default 10s)
         jitter_seconds: randomize start (prevents all watchers firing at once)
     """
 
-    def __init__(self, name: str, interval_seconds: int = 60,
+    def __init__(self, name: str, interval_seconds: int = 10,
                  jitter_seconds: int = 0):
         self.name = name
         self.interval = interval_seconds

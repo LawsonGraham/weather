@@ -20,9 +20,9 @@ FETCH_INTERVAL_MIN = 60  # rebuild catalog at most once per hour
 
 
 class MarketsWatcher(Watcher):
-    def __init__(self, interval_seconds: int = 60):
+    def __init__(self, interval_seconds: int = 10):
         super().__init__(name="markets", interval_seconds=interval_seconds,
-                        jitter_seconds=5)
+                        jitter_seconds=3)
 
     async def has_new_data(self) -> bool:
         last_ok = self.state.last_fetch_success_at

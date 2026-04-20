@@ -8,7 +8,7 @@ Seven subcommands, grouped by purpose:
 
   --- Data ingestion ---
   cfp daemon
-      Run all 6 data watchers concurrently. Probes every 60s, fetches
+      Run all 6 data watchers concurrently. Probes every 10s, fetches
       only when upstream has new data. Ctrl+C to stop cleanly.
 
   cfp watch <name>
