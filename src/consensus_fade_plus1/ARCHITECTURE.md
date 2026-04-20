@@ -1,129 +1,183 @@
 # Architecture
 
-The whole system is 4 small files. Read in this order, top to bottom:
+Five files, read top-to-bottom in this order:
 
 ```
 src/
 ├── consensus_fade_plus1/
-│   ├── discover.py    ← "what markets do we want to trade today?"
-│   ├── strategy.py    ← "how do we actually buy them?"
-│   ├── node.py        ← "wire discover + strategy into Nautilus"
-│   └── cli.py         ← "what the operator runs"
+│   ├── discover.py      ← data function: "which markets pass consensus right now?"
+│   ├── persistence.py   ← data sinks: LedgerWriter + BookSnapshotWriter
+│   ├── strategy.py      ← the `while True` loop + IOC take logic
+│   ├── node.py          ← wire everything into a Nautilus TradingNode
+│   └── cli.py           ← operator entry points
 │
 └── lib/
-    ├── weather/       ← forecast loaders used by discover.py
-    └── watchers/      ← background pollers that keep data fresh
+    ├── weather/         ← forecast loaders used by discover.py
+    └── watchers/        ← background pollers that keep data fresh
 ```
 
-## Data flow (daily)
+## Data flow
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
-  │  Background daemon (cfp daemon — a separate process)                │
+  │  cfp daemon — separate process                                      │
   │                                                                    │
-  │  Every few minutes, watchers refresh:                              │
-  │    - NBS forecasts (data/processed/iem_mos/NBS/)                   │
-  │    - GFS MOS forecasts (data/processed/iem_mos/GFS/)               │
-  │    - HRRR forecasts (data/processed/hrrr/)                         │
-  │    - METAR observations (data/processed/iem_metar/)                │
-  │    - Polymarket market catalog (data/processed/polymarket_weather/)│
-  │    - Unified features parquet (data/processed/backtest_v3/)        │
+  │  6 watchers probe upstream every 10s. On change, they fetch:       │
+  │    NBS + GFS  → incremental append (~2s)                           │
+  │    HRRR       → S3 HEAD probe, download new cycles                 │
+  │    METAR      → current-month re-fetch                             │
+  │    markets    → hourly Polymarket catalog refresh                  │
+  │    features   → rebuilds backtest_v3/features.parquet              │
   └────────────────────────────────────────────────────────────────────┘
                                 │
-                                ▼
+                                ▼  (parquet files on disk)
   ┌────────────────────────────────────────────────────────────────────┐
-  │  cfp run (separate process — starts the Nautilus node)              │
+  │  cfp run — separate process, starts the Nautilus node               │
   │                                                                    │
-  │  1. discover.py queries features parquet + markets parquet:        │
-  │     "which cities have consensus ≤ 3°F AND a +1 offset bucket      │
-  │      that exists?" Returns list of (condition_id, no_token_id).    │
-  │                                                                    │
-  │  2. node.py builds a Nautilus TradingNode:                         │
-  │     - PolymarketDataClient subscribes to those instruments' books  │
-  │     - PolymarketExecClient handles order placement/cancel/fills    │
-  │     - ConsensusFadeStrategy is wired in                            │
-  │                                                                    │
-  │  3. strategy.on_start() places ONE limit BUY per market at         │
-  │     max_no_price (default 0.92) with qty=shares_per_market (110).  │
-  │                                                                    │
-  │  4. Polymarket's matching engine auto-fills our resting orders     │
-  │     as new retail YES-bids appear in range. We pay the ASK price   │
-  │     (always ≤ our limit), maker fee is zero.                       │
-  │                                                                    │
-  │  5. strategy.on_order_filled() logs each fill. Order keeps resting │
-  │     until fully filled or we stop the node.                        │
-  │                                                                    │
-  │  6. Ctrl+C → strategy.on_stop() cancels all open orders.           │
+  │  1. discover.py → initial list of tradeable markets                │
+  │  2. node.py builds TradingNode with:                               │
+  │       - PolymarketDataClient (L2 book deltas via WSS)              │
+  │       - PolymarketExecClient (signs + submits orders)              │
+  │       - ConsensusFadeStrategy wired in                             │
+  │  3. Strategy runs its own asyncio task — a `while True` loop       │
+  │     that ticks every 0.5s (see below)                              │
+  │  4. Ledger + snapshots write JSONL under data/processed/cfp_*/     │
+  │  5. Ctrl+C → on_stop() cancels pending, flushes writers            │
   └────────────────────────────────────────────────────────────────────┘
 ```
 
-## Why this design is simple
+## The strategy's tick loop
 
-1. **Matching happens server-side.** Polymarket's CLOB matches asks against
-   our resting bid. We don't need to watch the book or cancel/replace on
-   every update. One order per market. Done.
+Every 0.5s the strategy does this:
 
-2. **Nautilus handles the hard stuff.** L2 book subscriptions, reconnect
-   logic, order state machine, fills via user-channel WSS — all in their
-   adapter. We write ~50 lines of strategy code; Nautilus owns 80+ KB of
-   plumbing.
+```
+# (1) Refresh state — each function early-returns if nothing changed
+state.active = refresh_active_markets(features.parquet)
 
-3. **"Range buying" = one limit at our max price.** The user's ask was
-   "fill anything in our buying range." A limit BUY at $0.92 literally does
-   this: any ask that appears ≤ $0.92 matches us. No additional logic.
+# (2) For each currently-active market, consider taking liquidity
+for iid in state.active:
+    if iid in state.pending:             # an IOC is still resolving
+        continue
+    room = shares_per_market - state.positions[iid]
+    if room < min_order_shares:          # we've hit the cap
+        continue
+    takeable = sum asks at ≤ max_no_price
+    if takeable < min_order_shares:      # no in-range liquidity right now
+        continue
+    submit IOC BUY sized min(takeable, room) at max_no_price
+```
 
-4. **Separation of concerns.** Data ingestion runs as a separate daemon
-   process. Trading runs as its own process. They communicate via the
-   filesystem (parquet files). Either can crash without affecting the other.
+### Why IOC (immediate-or-cancel), not resting limit
+
+We want to **take** liquidity that's currently there, not **rest** on the book
+advertising our interest. An IOC at price X:
+- Crosses immediately against any existing ask at ≤ X
+- Takes what it can (partial fills OK)
+- Cancels anything unfilled
+- Never sits visible on the book
+
+This means:
+- If nothing qualifying is on the book right now, the tick is a no-op —
+  no capital sits in reserve against a resting order that may never fill.
+- When retail places a new YES-bid that crosses, we see it on the next
+  book delta and the next tick takes it.
+- We never pay above our price ceiling.
+
+### What triggers re-evaluation
+
+- **New book state**: every book delta from Polymarket updates Nautilus's
+  cache. The next tick reads the updated book.
+- **New forecast data**: when a watcher rebuilds `features.parquet`, the
+  mtime changes. The next `_refresh_active_markets()` re-runs discovery
+  and the active set updates. If a market drops out of consensus, we stop
+  acting on it; if it comes back, we resume.
+- **Our own fills**: update `state.positions[iid]` locally on each fill
+  so the per-market cap is enforced without waiting for Nautilus's
+  portfolio reconciliation.
+
+## Persistence
+
+Two append-only JSONL files, rotated daily at UTC midnight:
+
+- `data/processed/cfp_ledger/YYYY-MM-DD.jsonl` — every order event
+  (submitted, accepted, filled, canceled, rejected) + active-set changes
+  (active_added, active_removed) + session boundaries.
+- `data/processed/cfp_book_snapshots/YYYY-MM-DD.jsonl` — top-10 bids +
+  asks per subscribed instrument, every 10 minutes.
+
+Both survive process crashes (flushed after every write). Rotation is
+automatic — you can safely run the node across UTC midnight.
 
 ## File-by-file
 
-### `discover.py` (~120 lines)
+### `discover.py` (~150 lines)
 
-Input: a target date (defaults to today UTC).
-Output: list of `TradeableMarket` — one per (city, +1 bucket) pair that
-passes filters.
+Input: target date (defaults to today UTC).
+Output: `list[TradeableMarket]` — (city, +1 bucket, condition_id, no_token_id, …)
 
-Filters: NBS + GFS present, consensus_spread ≤ 3°F, +1 bucket exists for
-the city on that market_date.
+Filters: NBS + GFS present, consensus_spread ≤ 3°F, +1 bucket exists.
+Called once at startup (for initial subscription list) and then from
+the strategy's tick loop whenever features.parquet changes.
 
-### `strategy.py` (~100 lines)
+### `persistence.py` (~100 lines)
 
-Three methods: `on_start`, `on_stop`, `on_order_filled`. That's it.
+Two classes: `LedgerWriter` and `BookSnapshotWriter`. Both are thin wrappers
+around a shared `_DailyJSONLWriter` that handles daily rotation + lazy
+file opening. No external deps.
 
-On start: for each market, submit a limit BUY at `max_no_price` for
-`shares_per_market` shares. Nautilus handles the rest.
+### `strategy.py` (~280 lines)
 
-On fill: log it. The remaining qty stays resting automatically.
+The continuous-polling strategy. Structure:
 
-On stop: cancel open orders.
+- `ConsensusFadeConfig` — frozen dataclass of knobs
+- `StrategyState` — mutable dict of what we know (active markets, positions,
+  pending orders, loop control)
+- `ConsensusFadeStrategy` — Nautilus `Strategy` subclass:
+    - `on_start` / `on_stop` — wallet up + down
+    - `_main_loop` — the `while True` asyncio task
+    - `_tick` — one iteration (refresh state, decide whether to act)
+    - `_maybe_take` / `_submit_ioc_buy` — order submission
+    - `on_order_*` event hooks — ledger writes + position updates
+    - `_on_snapshot_timer` — periodic book snapshot to disk
 
-### `node.py` (~80 lines)
+Read top-to-bottom. The control flow is a single `while self.state.running:`
+loop that calls `_tick()` every 0.5s.
 
-Builds a `TradingNode` with Polymarket data + exec clients configured,
-wires in `ConsensusFadeStrategy`, calls `node.run()` which blocks until
-SIGINT/SIGTERM.
+### `node.py` (~130 lines)
 
-### `cli.py` (~90 lines)
+Builds a Nautilus `TradingNode` with:
+- Polymarket data + exec clients scoped to today's discovered instruments
+- Our `ConsensusFadeStrategy` wired in
+- Blocks on `node.run()` until SIGINT/SIGTERM
 
-Argparse subcommand dispatch. Each subcommand is ~5-10 lines:
-- `setup`: wallet bootstrap
-- `discover`: dry-run discovery
-- `run`: start the trading node
-- `daemon`: start the data watchers
-- `watchers`: check watcher state
+### `cli.py` (~200 lines)
+
+Argparse dispatch. Subcommands:
+- `setup` / `setup --check` — wallet bootstrap (one time)
+- `daemon` — start all 6 watchers
+- `watch <name>` — run ONE watcher live (for testing)
+- `watchers` — show watcher state
+- `discover` — dry-run discovery (no orders)
+- `run` — start the trading node
 
 ## Operational mental model
 
-- **Every day, around the time you want to trade:**
-  1. The data daemon (already running in the background) keeps feeds fresh.
-  2. You run `cfp run`. It discovers markets, places orders, waits for fills.
-  3. Leave it running. Each order sits on the book absorbing flow.
-  4. Before markets resolve (~midnight UTC), Ctrl+C to cancel unfilled.
+- **Ingestion daemon runs continuously.** `cfp daemon` in a screen / tmux /
+  systemd unit. Watchers probe every 10s, refetch only on change.
+- **Trading node starts when you want to trade.** `cfp run` discovers
+  markets, subscribes to books, starts ticking. Leave it running. It
+  picks up new data automatically.
+- **Every action is recorded.** If you want to know what happened, read
+  `cfp_ledger/<today>.jsonl` or `cfp_book_snapshots/<today>.jsonl`.
+- **Safe to kill at any time.** `on_stop` cancels in-flight orders
+  (shouldn't be any since all orders are IOC, which terminate in milliseconds)
+  and flushes writers.
 
-- **Scaling**: adjust `--shares-per-market` / `--max-no-price` as knobs.
-  Fewer shares = less capital at risk. Lower max price = tighter edge
-  requirement (fewer fills but higher per-fill edge).
+## Scaling knobs
 
-- **Debugging**: logs go to stdout (Nautilus default). No hidden state —
-  everything the strategy knows is visible in its constructor's dict.
+Config parameters (all in `ConsensusFadeConfig`, all overridable from CLI):
+
+- `max_no_price`: edge threshold. Tighter = fewer fills, higher per-fill edge.
+- `shares_per_market`: per-market position cap. Caps capital at risk.
+- `min_order_shares`: minimum shares per IOC. Respects venue minimum.
+- `tick_interval_seconds`: main loop cadence. 0.5s is the default.
