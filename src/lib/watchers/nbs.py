@@ -1,16 +1,14 @@
 """NBS (NBM station text) watcher.
 
 NBM forecasts publish 4x/day — IEM ingests runs at ~01 / 07 / 13 / 19 UTC
-(with ~1h publishing lag). New runs are visible via the IEM MOS CGI.
+(~1h publishing lag). We probe IEM every 10s for a new max runtime and,
+when we see one, fetch just the last 3 days of data per station and
+merge-dedupe into our existing CSVs.
 
-CHEAP PROBE: GET one station (KLGA) x today only from IEM — returns a
-~5-20KB CSV. Parse max `runtime`, compare to the last runtime we fetched.
-Any newer upstream runtime → trigger fetch.
-
-HEAVY FETCH: pull full history (NBS_HISTORY_START → today, all stations,
---force). Necessary because the iem_mos downloader writes ONE CSV per
-(station, model) and --force with a narrow window wipes history. ~40MB
-per fetch, ~30s.
+CHEAP PROBE: GET one station (KLGA) x today only from IEM (~5-20KB).
+HEAVY FETCH: parallel GET last 3 days for all stations, merge-dedupe
+into <raw>/NBS/<station>.csv, then rerun the transform to rebuild
+the parquet. ~1MB / ~2s total.
 """
 from __future__ import annotations
 
@@ -18,70 +16,58 @@ from datetime import UTC, date, datetime
 
 import httpx
 
-from lib.watchers.base import Watcher, run_subprocess
+from lib.watchers._iem_mos_helpers import (
+    IEM_MOS_URL,
+    IEM_USER_AGENT,
+    fetch_and_merge_mos,
+)
+from lib.watchers.base import REPO_ROOT, Watcher, run_subprocess
 
 STATIONS = ["KLGA", "KATL", "KDAL", "KSEA", "KORD", "KMIA",
             "KLAX", "KSFO", "KHOU", "KAUS", "KDEN"]
-NBS_HISTORY_START = date(2025, 11, 30)
-
 PROBE_STATION = "KLGA"
-IEM_MOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.py"
+RAW_DIR = REPO_ROOT / "data" / "raw" / "iem_mos"
 
 
 class NBSWatcher(Watcher):
     def __init__(self, interval_seconds: int = 10):
         super().__init__(name="nbs", interval_seconds=interval_seconds,
                         jitter_seconds=5)
-        # Populated by has_new_data() and read by fetch_new_data() so we can
-        # record the new max_runtime in state.last_detail after a fetch.
+        # Set by has_new_data(), read by fetch_new_data() to record the new
+        # max_runtime in state.last_detail after a successful fetch.
         self._last_probed_max: datetime | None = None
 
     async def has_new_data(self) -> bool:
         today = datetime.now(UTC).date()
         self._last_probed_max = await self._probe_upstream_max(today)
         if self._last_probed_max is None:
-            return False  # upstream has nothing for today yet
+            return False
         local_max_str = self.state.last_detail.get("max_runtime")
         if not local_max_str:
-            return True  # never fetched
-        local_max = datetime.fromisoformat(local_max_str)
-        return self._last_probed_max > local_max
+            return True
+        return self._last_probed_max > datetime.fromisoformat(local_max_str)
 
     async def fetch_new_data(self) -> dict:
         import asyncio
-        today = datetime.now(UTC).date()
-        loop = asyncio.get_running_loop()
+        # Incremental: pull last 3 days, merge into per-station CSVs.
+        summary = await fetch_and_merge_mos("NBS", STATIONS, RAW_DIR)
 
-        cmd = [
-            "uv", "run", "python", "scripts/iem_mos/download.py",
-            "--start", NBS_HISTORY_START.isoformat(),
-            "--end", today.isoformat(),
-            "--stations", *STATIONS,
-            "--models", "NBS",
-            "--force",
-        ]
+        # Rebuild parquet from the (now-updated) per-station CSVs.
+        loop = asyncio.get_running_loop()
+        cmd = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
         rc, _, err = await loop.run_in_executor(
-            None, lambda: run_subprocess(cmd, timeout=300),
+            None, lambda: run_subprocess(cmd, timeout=120),
         )
         if rc != 0:
-            raise RuntimeError(f"iem_mos download (NBS) failed: {err[-500:]}")
-
-        cmd2 = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
-        rc2, _, err2 = await loop.run_in_executor(
-            None, lambda: run_subprocess(cmd2, timeout=120),
-        )
-        if rc2 != 0:
-            raise RuntimeError(f"iem_mos transform failed: {err2[-500:]}")
+            raise RuntimeError(f"iem_mos transform failed: {err[-500:]}")
 
         return {
-            "through": today.isoformat(),
-            "stations": len(STATIONS),
+            **summary,
             "max_runtime": self._last_probed_max.isoformat() if self._last_probed_max else None,
         }
 
     async def _probe_upstream_max(self, today: date) -> datetime | None:
         """Fetch 1 station x today from IEM CGI, parse max runtime."""
-        # Param shape must match scripts/iem_mos/download.py (same CGI).
         params = {
             "station": PROBE_STATION,
             "model": "NBS",
@@ -89,7 +75,7 @@ class NBSWatcher(Watcher):
             "ets": f"{today.isoformat()}T23:59Z",
             "format": "csv",
         }
-        headers = {"User-Agent": "weather-mos/1.0"}
+        headers = {"User-Agent": IEM_USER_AGENT}
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             r = await client.get(IEM_MOS_URL, params=params)
             r.raise_for_status()
