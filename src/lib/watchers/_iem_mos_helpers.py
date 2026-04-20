@@ -28,6 +28,14 @@ IEM_USER_AGENT = "weather-mos/1.0"
 # protects against missing rows if a probe flickers or a fetch is skipped.
 DEFAULT_WINDOW_DAYS = 3
 
+# Serialize transform.py invocations across NBS + GFS watchers. scripts/iem_mos
+# /transform.py processes BOTH models internally on every run, so two watchers
+# calling it concurrently race on the same output parquets — a reader globbing
+# data/processed/iem_mos/<model>/*.parquet mid-write picks up a partial tmp
+# file. The lock guarantees one transform at a time. Scoped to the process
+# that imports this module (both watchers run in the same daemon process).
+transform_lock = asyncio.Lock()
+
 
 async def fetch_and_merge_mos(
     model: str,

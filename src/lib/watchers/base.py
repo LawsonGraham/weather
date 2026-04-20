@@ -218,10 +218,34 @@ async def run_watchers(watchers: list[Watcher],
 
 
 def run_subprocess(cmd: list[str], timeout: int = 300) -> tuple[int, str, str]:
-    """Run a subprocess, return (returncode, stdout, stderr)."""
+    """Run a subprocess, return (returncode, stdout, stderr).
+
+    IMPORTANT: on timeout, kills the child and its process group — Python's
+    `subprocess.run(timeout=...)` raises `TimeoutExpired` but does NOT kill
+    the child, which would leak processes forever under a continuously
+    running daemon. We wrap explicitly so timeouts are terminal.
+    """
+    import contextlib
+    import os
+    import signal
     import subprocess
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout,
-        cwd=REPO_ROOT,
+    # start_new_session=True puts the child in its own process group so we
+    # can kill the whole tree (uv → python → script) in one signal.
+    p = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cwd=REPO_ROOT, start_new_session=True,
     )
-    return result.returncode, result.stdout, result.stderr
+    try:
+        stdout, stderr = p.communicate(timeout=timeout)
+        return p.returncode, stdout, stderr
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        # Drain any pending output so the pipe closes cleanly.
+        try:
+            stdout, stderr = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
+        raise subprocess.TimeoutExpired(
+            cmd, timeout, output=stdout, stderr=stderr,
+        ) from None

@@ -402,11 +402,23 @@ class Cycle:
 
 
 def generate_cycles(start_d: date, end_d: date, fxx_list: list[int]) -> list[Cycle]:
+    """Enumerate (init_time, fxx) pairs in [start_d, end_d] that should have
+    published by now.
+
+    HRRR cycles post to S3 ~1.5-2h after their init time. We skip cycles whose
+    init is newer than that, because attempting them guarantees a 404 — which
+    inflates `counters.failed`, returns nonzero, and (under a continuous daemon)
+    creates a retry loop that never stabilizes. A watcher polling every N
+    minutes will pick up those cycles on the next run once they're published.
+    """
     cycles: list[Cycle] = []
+    latency_cutoff = datetime.now(UTC) - timedelta(hours=2)
     d = start_d
     while d <= end_d:
         for h in range(24):
             init_dt = datetime(d.year, d.month, d.day, h, 0, 0, tzinfo=UTC)
+            if init_dt > latency_cutoff:
+                continue  # not published yet
             for f in fxx_list:
                 cycles.append(Cycle(init_dt=init_dt, fxx=f))
         d += timedelta(days=1)
@@ -1207,14 +1219,23 @@ def main() -> int:
         print(f"--fresh: removing {RAW_DIR}")
         shutil.rmtree(RAW_DIR)
 
-    # Manifest gate: refuse if previous run is in_progress or failed without --force.
+    # Manifest gate: refuse if a prior run is truly still running.
+    # "failed" status just means a previous run didn't complete cleanly — the
+    # incrementally-written parquet files are still valid, and retrying will
+    # pick up where we left off. Only "in_progress" genuinely needs to gate
+    # (concurrent runs could corrupt partial Parquet writes).
     existing = read_manifest()
     if existing and not force:
         status = existing.get("download", {}).get("status")
-        if status in ("in_progress", "failed"):
+        if status == "in_progress":
             die(
-                f"manifest status is {status!r}; investigate {MANIFEST_PATH} "
-                f"then re-run with --force (or --fresh to wipe)."
+                f"manifest status is {status!r}; another run may be active. "
+                f"Investigate {MANIFEST_PATH} then re-run with --force."
+            )
+        if status == "failed":
+            log.warning(
+                f"previous run left manifest status={status!r}; retrying "
+                f"(incremental parquet writes are safe to resume).",
             )
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ from lib.watchers._iem_mos_helpers import (
     IEM_MOS_URL,
     IEM_USER_AGENT,
     fetch_and_merge_mos,
+    transform_lock,
 )
 from lib.watchers.base import REPO_ROOT, Watcher, run_subprocess
 
@@ -53,11 +54,14 @@ class NBSWatcher(Watcher):
         summary = await fetch_and_merge_mos("NBS", STATIONS, RAW_DIR)
 
         # Rebuild parquet from the (now-updated) per-station CSVs.
+        # Lock: transform.py processes BOTH NBS + GFS in one run, so concurrent
+        # calls from NBS and GFS watchers race on the output parquets.
         loop = asyncio.get_running_loop()
-        cmd = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
-        rc, _, err = await loop.run_in_executor(
-            None, lambda: run_subprocess(cmd, timeout=120),
-        )
+        async with transform_lock:
+            cmd = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
+            rc, _, err = await loop.run_in_executor(
+                None, lambda: run_subprocess(cmd, timeout=120),
+            )
         if rc != 0:
             raise RuntimeError(f"iem_mos transform failed: {err[-500:]}")
 

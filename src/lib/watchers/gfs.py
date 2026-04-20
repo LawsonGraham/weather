@@ -13,6 +13,7 @@ from lib.watchers._iem_mos_helpers import (
     IEM_MOS_URL,
     IEM_USER_AGENT,
     fetch_and_merge_mos,
+    transform_lock,
 )
 from lib.watchers.base import REPO_ROOT, Watcher, run_subprocess
 from lib.watchers.nbs import _parse_max_first_col
@@ -43,11 +44,13 @@ class GFSWatcher(Watcher):
         import asyncio
         summary = await fetch_and_merge_mos("GFS", STATIONS, RAW_DIR)
 
+        # Lock: serialize with NBS's transform call (see nbs.py).
         loop = asyncio.get_running_loop()
-        cmd = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
-        rc, _, err = await loop.run_in_executor(
-            None, lambda: run_subprocess(cmd, timeout=120),
-        )
+        async with transform_lock:
+            cmd = ["uv", "run", "python", "scripts/iem_mos/transform.py"]
+            rc, _, err = await loop.run_in_executor(
+                None, lambda: run_subprocess(cmd, timeout=120),
+            )
         if rc != 0:
             raise RuntimeError(f"iem_mos transform failed: {err[-500:]}")
 

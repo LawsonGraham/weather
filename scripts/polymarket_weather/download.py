@@ -365,7 +365,8 @@ def process_slug(slug: str, *, force: bool) -> tuple[str, int]:
 
 
 def load_slugs(
-    slugs_file: Path, *, city: str | None, explicit: list[str] | None, limit: int | None
+    slugs_file: Path, *, city: str | None, cities: list[str] | None,
+    explicit: list[str] | None, limit: int | None,
 ) -> list[str]:
     if explicit:
         return explicit
@@ -373,11 +374,17 @@ def load_slugs(
     if not slugs_file.exists():
         die(f"slugs file not found: {slugs_file}")
 
+    city_set: set[str] | None = None
+    if cities:
+        city_set = set(cities)
+    elif city:
+        city_set = {city}
+
     selected: list[str] = []
     with open(slugs_file, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if city and row.get("city", "") != city:
+            if city_set is not None and row.get("city", "") not in city_set:
                 continue
             slug = row.get("slug", "").strip()
             if slug:
@@ -400,7 +407,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SLUGS_CSV,
         help=f"CSV with 'slug' column (default: {DEFAULT_SLUGS_CSV.relative_to(REPO_ROOT)})",
     )
-    p.add_argument("--city", help="filter slugs by exact city match")
+    p.add_argument("--city", help="filter slugs by exact city match (single city)")
+    p.add_argument("--cities", help=(
+        "comma-separated list of cities to include "
+        "(use this instead of --city for multi-city filtering)"
+    ))
     p.add_argument("--slugs", help="explicit comma-separated slug list (overrides --slugs-file)")
     p.add_argument("--limit", type=int, help="only process the first N selected slugs")
     p.add_argument("--force", action="store_true", help="re-download even if cached")
@@ -416,11 +427,16 @@ def main() -> int:
     FILLS_DIR.mkdir(parents=True, exist_ok=True)
     configure_logging()
 
-    slugs = load_slugs(args.slugs_file, city=args.city, explicit=explicit, limit=args.limit)
+    cities = [c.strip() for c in args.cities.split(",")] if args.cities else None
+    slugs = load_slugs(
+        args.slugs_file, city=args.city, cities=cities,
+        explicit=explicit, limit=args.limit,
+    )
     log.info(
         "source:  %s", args.slugs_file.relative_to(REPO_ROOT) if args.slugs_file else "(explicit)"
     )
-    log.info("filter:  city=%r  limit=%s  force=%s", args.city, args.limit, args.force)
+    log.info("filter:  city=%r  cities=%s  limit=%s  force=%s",
+             args.city, cities, args.limit, args.force)
     log.info("selected: %d slugs", len(slugs))
 
     if not slugs:
