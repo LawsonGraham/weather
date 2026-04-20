@@ -48,7 +48,8 @@ def _ensure_env() -> None:
 
 def _build_node(markets: list[TradeableMarket], *,
                 max_no_price: float,
-                shares_per_market: int):
+                shares_per_market: int,
+                lookahead_days: int = 1):
     """Build a Nautilus TradingNode wired for today's markets.
 
     Lazy-imports heavy Nautilus symbols so module is cheap for CLI help.
@@ -110,6 +111,7 @@ def _build_node(markets: list[TradeableMarket], *,
         instrument_ids=instrument_ids,
         max_no_price=max_no_price,
         shares_per_market=shares_per_market,
+        lookahead_days=lookahead_days,
     )
     strategy = ConsensusFadeStrategy(config=strategy_config)
 
@@ -122,7 +124,8 @@ def _build_node(markets: list[TradeableMarket], *,
 
 
 def run(*, max_no_price: float = 0.92,
-        shares_per_market: int = 110) -> int:
+        shares_per_market: int = 110,
+        lookahead_days: int = 1) -> int:
     """Start the trading node. Runs continuously until Ctrl+C.
 
     Initial instrument set = today's qualifying markets (seed for the
@@ -145,7 +148,8 @@ def run(*, max_no_price: float = 0.92,
 
     node = _build_node(markets,
                        max_no_price=max_no_price,
-                       shares_per_market=shares_per_market)
+                       shares_per_market=shares_per_market,
+                       lookahead_days=lookahead_days)
     try:
         node.run()
     finally:

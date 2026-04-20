@@ -66,8 +66,11 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     from consensus_fade_plus1.node import run
-    return run(max_no_price=args.max_no_price,
-              shares_per_market=args.shares_per_market)
+    return run(
+        max_no_price=args.max_no_price,
+        shares_per_market=args.shares_per_market,
+        lookahead_days=args.lookahead_days,
+    )
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -169,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run", help="Start the live trading node")
     p.add_argument("--max-no-price", type=float, default=0.92)
     p.add_argument("--shares-per-market", type=int, default=110)
+    p.add_argument("--lookahead-days", type=int, default=1,
+                  help="Subscribe to today + N days ahead (default 1)")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")
