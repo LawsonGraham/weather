@@ -45,7 +45,21 @@ STATIONS = list(TZ.keys())
 # IS / OOS boundaries (LOCKED before peeking at model performance)
 IS_END = date(2026, 2, 28)
 START_DATE = date(2025, 12, 1)
-END_DATE = date(2026, 4, 14)
+
+# END_DATE grows with the clock so live-trading features cover today +
+# forecast-horizon days. NBS and GFS publish ~72h of ahead-forecast; the
+# strategy's discover step queries a few days forward for rollover.
+# Override with the BUILD_FEATURES_END_DATE env var for reproducible
+# historical rebuilds.
+import os as _os
+_env_end = _os.environ.get("BUILD_FEATURES_END_DATE")
+if _env_end:
+    END_DATE = date.fromisoformat(_env_end)
+else:
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    END_DATE = _dt.now(_UTC).date() + _td(days=3)
 
 
 def _con() -> duckdb.DuckDBPyConnection:

@@ -46,6 +46,8 @@ dependencies = [
     # Re-audit before bumping: https://github.com/nautechsystems/nautilus_trader/compare/f6f2a76...develop
     "nautilus-trader @ git+https://github.com/nautechsystems/nautilus_trader.git@f6f2a76c37b67eeadad9a78834d6d88b93f6f5fe",
     "py-clob-client>=0.34.6",
+    "web3>=7.15.0",
+    "eth-account>=0.13.7",
 ]
 
 [project.scripts]
