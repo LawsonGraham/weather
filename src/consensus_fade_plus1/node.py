@@ -123,17 +123,25 @@ def _build_node(markets: list[TradeableMarket], *,
 
 def run(*, max_no_price: float = 0.92,
         shares_per_market: int = 110) -> int:
-    """Discover markets, start the node, trade until Ctrl+C."""
+    """Start the trading node. Runs continuously until Ctrl+C.
+
+    Initial instrument set = today's qualifying markets (seed for the
+    provider's upfront load). The strategy's rollover logic expands this
+    automatically as new markets qualify, and unsubscribes resolved ones.
+    Safe to start with zero initial markets — the strategy will subscribe
+    dynamically as consensus tightens.
+    """
     _ensure_env()
 
     markets = discover_tradeable_markets()
     print_discovery_summary(markets)
     if not markets:
-        print("[node] no tradeable markets today — exiting.")
-        return 0
-
-    print(f"[node] starting TradingNode for {len(markets)} market(s); "
-          f"max_no_price={max_no_price}, {shares_per_market} shares/market")
+        print("[node] no markets tradeable right now — starting anyway. "
+              "Strategy will subscribe dynamically as markets qualify.")
+    else:
+        print(f"[node] starting TradingNode with {len(markets)} initial market(s); "
+              f"max_no_price={max_no_price}, {shares_per_market} shares/market. "
+              f"Rollover handles new/resolved markets automatically.")
 
     node = _build_node(markets,
                        max_no_price=max_no_price,

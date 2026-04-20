@@ -1,40 +1,50 @@
-"""Consensus-Fade +1 Offset — continuous polling strategy.
+"""Consensus-Fade +1 Offset — continuous polling strategy with live rollover.
 
 Mental model: a `while True` loop that polls our data functions every
 ~0.5s. Each tick:
 
   1. Refresh state from data sources:
-       - active_markets: re-read features.parquet (if changed), keep
-         only instruments where the 3 forecasts align on a +1 bucket.
-       - book state: Nautilus's cache maintains live L2 books via WSS.
-       - positions: maintained locally from OrderFilled events.
-  2. For each active market:
-       - Skip if an IOC is already in flight
-       - Skip if we've hit the per-market cap
-       - Read the book: sum ask qty at prices <= max_no_price
-       - If anything takeable: submit an IOC BUY sized to sweep it
+       - subscribed set: markets we're receiving book deltas for. Grows
+         as discover finds new qualifying markets (auto-loaded + subscribed
+         transparently via Nautilus). Shrinks when a market resolves.
+       - active set: subset of subscribed that's tradeable RIGHT NOW
+         (end_date == today AND consensus passes AND +1 bucket valid).
+         This is the set the take logic fires on.
+       - positions: per-market shares owned, updated locally on fills.
+  2. For each active market: if room under cap AND asks in range, fire
+     an IOC BUY sized to sweep them.
   3. Sleep tick_interval, repeat.
+
+Continuous operation across UTC midnight:
+  - The daemon refreshes markets.parquet every ~1h, picking up new days'
+    markets ~4h after Polymarket lists them.
+  - Every ~60s the tick re-runs discover for today AND the next
+    `lookahead_days`. Any new instrument seen → subscribe_order_book_deltas
+    (Nautilus's auto-load fetches the instrument from Gamma and wires up
+    the WSS sub, with the instrument landing in the cache before any
+    messages flow).
+  - Every ~5min the tick checks `instrument.expiration_ns` on the
+    subscribed set. Anything past expiry → unsubscribe.
 
 No resting limit orders. Every buy is IOC — it crosses against existing
 asks at <= max_no_price, takes what it can, cancels any unfilled
 remainder. If nothing in-range is on the book right now, we wait for
 it to show up and try again on the next tick.
 
-The strategy picks up new forecast data automatically: when a watcher
-rebuilds features.parquet, the mtime changes and the next tick re-runs
-discovery. If consensus widens on a market, it drops out of active and
-we stop acting on it. If it tightens back, it returns.
-
 Data flow:
-  features.parquet -->  discover_tradeable_markets()  -->  active set
-  Polymarket WSS   -->  Nautilus cache.order_book()   -->  takeable qty
-  fills            -->  self._state.positions          -->  per-market cap
+  features.parquet + markets.parquet  -->  discover_tradeable_markets
+                                              -->  subscribed / active
+  Polymarket WSS                      -->  cache.order_book(iid)
+                                              -->  takeable qty
+  fills                               -->  self._state.positions
+                                              -->  per-market cap
 """
 from __future__ import annotations
 
 import asyncio
+import traceback
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from nautilus_trader.common.component import TimeEvent
@@ -56,9 +66,15 @@ from consensus_fade_plus1.persistence import BookSnapshotWriter, LedgerWriter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURES_PATH = REPO_ROOT / "data" / "processed" / "backtest_v3" / "features.parquet"
+MARKETS_PATH = REPO_ROOT / "data" / "processed" / "polymarket_weather" / "markets.parquet"
 
 BOOK_SNAPSHOT_INTERVAL = timedelta(minutes=10)
 BOOK_DEPTH = 10  # levels subscribed + persisted per side
+
+# How often the tick runs the subscribe-sweep + expired-unsubscribe scans.
+# Discovery is cheap (mtime-gated) so we can afford frequent checks, but we
+# don't need sub-second cadence for something that changes daily.
+EXPIRY_CHECK_INTERVAL_NS = 5 * 60 * 1_000_000_000  # 5 min
 
 
 # -----------------------------------------------------------------------------
@@ -68,9 +84,9 @@ BOOK_DEPTH = 10  # levels subscribed + persisted per side
 class ConsensusFadeConfig(StrategyConfig, frozen=True):
     """Parameters for the continuous-polling strategy."""
 
-    # Nautilus InstrumentId strings we subscribe to at startup.
-    # The live set of ACTIVE markets (those currently passing consensus) is
-    # recomputed on every tick as features.parquet changes.
+    # Initial Nautilus InstrumentId strings to subscribe at on_start.
+    # The tick loop handles rollover from here — new markets get subscribed
+    # automatically as they appear; resolved markets get unsubscribed.
     instrument_ids: list[str]
 
     # Price ceiling for our IOC BUYs. Fair NO ~ 0.97 (backtest hit rate);
@@ -87,6 +103,11 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # Python work. 0.5s is a comfortable balance.
     tick_interval_seconds: float = 0.5
 
+    # How many days ahead to keep subscribed. 1 = today + tomorrow. Subscribing
+    # ahead of time means when a market becomes today's tradeable, its book is
+    # already warm. Nautilus auto-load handles the fetch transparently.
+    lookahead_days: int = 1
+
 
 # -----------------------------------------------------------------------------
 # State — everything the strategy knows about the world
@@ -96,13 +117,18 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
 class StrategyState:
     """Mutable state refreshed by each tick."""
 
-    # Currently tradeable markets (forecasts align + valid +1 bucket exists).
-    # Keyed by InstrumentId; value is the TradeableMarket snapshot.
+    # Instruments we're subscribed to book deltas for. Grows as new qualifying
+    # markets appear; shrinks when a market resolves (expiration_ns passes).
+    subscribed: set[InstrumentId] = field(default_factory=set)
+
+    # Subset of `subscribed` currently tradeable (end_date == today AND
+    # consensus passes). Take logic only fires on this set.
     active: dict[InstrumentId, object] = field(default_factory=dict)
 
-    # mtime of features.parquet used when we last computed `active`. Used
-    # to early-return refresh work when features haven't changed.
-    active_mtime: float = 0.0
+    # Cached discovery inputs — skip re-discover when nothing changed.
+    active_date: date | None = None
+    active_features_mtime: float = 0.0
+    active_markets_mtime: float = 0.0
 
     # Per-instrument position in shares (owned NO tokens). Updated on fills.
     positions: dict[InstrumentId, int] = field(default_factory=dict)
@@ -111,9 +137,8 @@ class StrategyState:
     # Prevents double-submission while one is still resolving.
     pending: dict[InstrumentId, ClientOrderId] = field(default_factory=dict)
 
-    # Instruments we've subscribed to book deltas for (from config.instrument_ids).
-    # We never unsubscribe within a session.
-    subscribed: set[InstrumentId] = field(default_factory=set)
+    # Throttle control for the expired-unsubscribe scan.
+    last_expiry_check_ns: int = 0
 
     # Loop control.
     running: bool = False
@@ -125,7 +150,7 @@ class StrategyState:
 # -----------------------------------------------------------------------------
 
 class ConsensusFadeStrategy(Strategy):
-    """Continuous polling loop that takes asks ≤ max_no_price via IOC."""
+    """Continuous polling loop with daily-market rollover + IOC takes."""
 
     def __init__(self, config: ConsensusFadeConfig) -> None:
         super().__init__(config)
@@ -146,6 +171,7 @@ class ConsensusFadeStrategy(Strategy):
             shares_per_market=self.config.shares_per_market,
             min_order_shares=self.config.min_order_shares,
             tick_interval_seconds=self.config.tick_interval_seconds,
+            lookahead_days=self.config.lookahead_days,
         )
         self.log.info(
             f"ledger     → {self._ledger.dir_path}/YYYY-MM-DD.jsonl",
@@ -156,19 +182,19 @@ class ConsensusFadeStrategy(Strategy):
             color=LogColor.BLUE,
         )
 
-        # Subscribe to book deltas for every instrument in config.instrument_ids.
-        # These are the only markets we'll ever consider this session.
+        # Seed subscriptions from the initial list. Nautilus auto-load covers
+        # anything not yet in cache — any instrument fetched by
+        # PolymarketInstrumentProviderConfig.load_ids is already cached; new
+        # ones added later by the tick loop will be auto-loaded on subscribe.
         for iid_str in self.config.instrument_ids:
             iid = InstrumentId.from_str(iid_str)
-            if self.cache.instrument(iid) is None:
-                self.log.error(f"instrument not in cache: {iid}")
-                continue
             self.subscribe_order_book_deltas(
                 iid, book_type=BookType.L2_MBP, depth=BOOK_DEPTH,
             )
             self._state.subscribed.add(iid)
         self.log.info(
-            f"subscribed to {len(self._state.subscribed)} instrument(s)",
+            f"seeded {len(self._state.subscribed)} initial subscription(s); "
+            f"rollover handles the rest",
             color=LogColor.BLUE,
         )
 
@@ -189,13 +215,15 @@ class ConsensusFadeStrategy(Strategy):
 
     def on_stop(self) -> None:
         self._state.running = False
-        # Cancel any in-flight orders (IOCs should already be terminal, but
-        # this is idempotent).
         for order in self.cache.orders_open(strategy_id=self.id):
             self.cancel_order(order)
         if self._ledger is not None:
-            self._ledger.log("session_stop", tick_count=self._state.tick_count,
-                             positions={str(k): v for k, v in self._state.positions.items()})
+            self._ledger.log(
+                "session_stop",
+                tick_count=self._state.tick_count,
+                subscribed_count=len(self._state.subscribed),
+                positions={str(k): v for k, v in self._state.positions.items()},
+            )
             self._ledger.close()
         if self._snapshots is not None:
             self._snapshots.close()
@@ -205,7 +233,8 @@ class ConsensusFadeStrategy(Strategy):
     async def _main_loop(self) -> None:
         """Polling loop. Pulls state, decides whether to act, sleeps, repeats."""
         self.log.info(
-            f"main loop started (tick every {self.config.tick_interval_seconds}s)",
+            f"main loop started (tick every {self.config.tick_interval_seconds}s, "
+            f"lookahead={self.config.lookahead_days} day(s))",
             color=LogColor.BLUE,
         )
         while self._state.running:
@@ -213,10 +242,9 @@ class ConsensusFadeStrategy(Strategy):
             try:
                 self._tick()
             except Exception as e:
-                import traceback
                 self.log.error(
                     f"tick #{self._state.tick_count} FAILED: {e!r}\n"
-                    f"{traceback.format_exc()}"
+                    f"{traceback.format_exc()}",
                 )
             await asyncio.sleep(self.config.tick_interval_seconds)
         self.log.info(
@@ -226,28 +254,43 @@ class ConsensusFadeStrategy(Strategy):
 
     def _tick(self) -> None:
         """One iteration of the loop: refresh state, act on each active market."""
-        # (1) Pull fresh state from our data functions. Each early-returns
-        #     if nothing's changed since last tick.
-        self._refresh_active_markets()
+        # (1) Sync the subscribed + active sets with the current data picture.
+        #     Early-returns if nothing changed since last tick.
+        self._refresh_subscribed_and_active()
 
-        # (2) For each active market, consider taking liquidity.
+        # (2) Unsubscribe resolved markets (throttled — runs every ~5min).
+        self._unsubscribe_expired()
+
+        # (3) For each currently-active market, consider taking liquidity.
         for iid in list(self._state.active.keys()):
             self._maybe_take(iid)
 
     # --- Data functions (cheap, called from _tick) ------------------------
 
-    def _refresh_active_markets(self) -> None:
-        """Re-read features.parquet if its mtime changed; update active set.
+    def _refresh_subscribed_and_active(self) -> None:
+        """Re-run discover for today + lookahead days. Subscribe new instruments.
+        Update the active set (today-only, consensus-passing).
 
-        Filters currently-qualifying markets (from discover) down to those
-        we already subscribed to at startup. Markets that dropped out of
-        consensus leave the active set; markets that re-qualified return.
+        Early-returns unless one of these changed since the last refresh:
+          - today's UTC date (handles the midnight rollover)
+          - features.parquet mtime (new weather forecasts)
+          - markets.parquet mtime (new markets listed)
         """
-        if not FEATURES_PATH.exists():
+        today = datetime.now(UTC).date()
+        features_mtime = (
+            FEATURES_PATH.stat().st_mtime if FEATURES_PATH.exists() else 0.0
+        )
+        markets_mtime = (
+            MARKETS_PATH.stat().st_mtime if MARKETS_PATH.exists() else 0.0
+        )
+
+        unchanged = (
+            today == self._state.active_date
+            and features_mtime <= self._state.active_features_mtime
+            and markets_mtime <= self._state.active_markets_mtime
+        )
+        if unchanged:
             return
-        mtime = FEATURES_PATH.stat().st_mtime
-        if mtime <= self._state.active_mtime:
-            return  # unchanged since last check — skip the re-discovery work
 
         # Lazy imports so this module is cheap to import from the CLI.
         from nautilus_trader.adapters.polymarket.common.symbol import (
@@ -256,24 +299,94 @@ class ConsensusFadeStrategy(Strategy):
 
         from consensus_fade_plus1.discover import discover_tradeable_markets
 
-        markets = discover_tradeable_markets(consensus_max=3.0)
+        # Discover markets for today + lookahead days. Today's qualifying
+        # markets go into `active`; all qualifying markets become subscribed.
         new_active: dict[InstrumentId, object] = {}
-        for m in markets:
-            iid = get_polymarket_instrument_id(m.condition_id, m.no_token_id)
-            if iid in self._state.subscribed:
-                new_active[iid] = m
+        for d_offset in range(self.config.lookahead_days + 1):
+            d = today + timedelta(days=d_offset)
+            try:
+                markets = discover_tradeable_markets(target_date=d, consensus_max=3.0)
+            except FileNotFoundError:
+                continue  # markets.parquet missing — daemon hasn't run yet
+            for m in markets:
+                iid = get_polymarket_instrument_id(m.condition_id, m.no_token_id)
+                # Subscribe if new (Nautilus auto-load fetches + caches the
+                # instrument from Gamma transparently before the WSS sub opens).
+                if iid not in self._state.subscribed:
+                    self.subscribe_order_book_deltas(
+                        iid, book_type=BookType.L2_MBP, depth=BOOK_DEPTH,
+                    )
+                    self._state.subscribed.add(iid)
+                    self._ledger.log(
+                        "subscribed",
+                        instrument_id=str(iid),
+                        city=m.city,
+                        market_date=str(m.market_date),
+                        bucket=m.bucket_title,
+                    )
+                    self.log.info(
+                        f"rollover+  subscribed {m.city} {m.market_date} "
+                        f"({m.bucket_title})  [{iid}]",
+                        color=LogColor.GREEN,
+                    )
+                # Mark today's qualifiers as active; lookahead days are just
+                # subscribed (we warm the book but don't trade them yet).
+                if d == today:
+                    new_active[iid] = m
 
+        # Log active-set diffs
         added = set(new_active) - set(self._state.active)
         removed = set(self._state.active) - set(new_active)
         for iid in added:
-            self.log.info(f"active+  {iid}", color=LogColor.GREEN)
-            self._ledger.log("active_added", instrument_id=str(iid))
+            m = new_active[iid]
+            self.log.info(
+                f"active+  {m.city} {m.market_date} ({m.bucket_title})",
+                color=LogColor.GREEN,
+            )
+            self._ledger.log(
+                "active_added",
+                instrument_id=str(iid),
+                city=m.city,
+                market_date=str(m.market_date),
+            )
         for iid in removed:
             self.log.info(f"active-  {iid}", color=LogColor.YELLOW)
             self._ledger.log("active_removed", instrument_id=str(iid))
 
         self._state.active = new_active
-        self._state.active_mtime = mtime
+        self._state.active_date = today
+        self._state.active_features_mtime = features_mtime
+        self._state.active_markets_mtime = markets_mtime
+
+    def _unsubscribe_expired(self) -> None:
+        """Scan subscribed instruments; unsubscribe any past their expiration.
+
+        Throttled to every EXPIRY_CHECK_INTERVAL_NS (5 min). Markets resolve
+        at `end_date` midnight UTC; `instrument.expiration_ns` reflects this.
+        """
+        now_ns = self.clock.timestamp_ns()
+        if now_ns - self._state.last_expiry_check_ns < EXPIRY_CHECK_INTERVAL_NS:
+            return
+        self._state.last_expiry_check_ns = now_ns
+
+        for iid in list(self._state.subscribed):
+            inst = self.cache.instrument(iid)
+            if inst is None:
+                continue
+            if inst.expiration_ns and inst.expiration_ns < now_ns:
+                self.unsubscribe_order_book_deltas(iid)
+                self._state.subscribed.discard(iid)
+                self._state.active.pop(iid, None)
+                self._ledger.log(
+                    "unsubscribed",
+                    instrument_id=str(iid),
+                    reason="expired",
+                    expiration_ns=int(inst.expiration_ns),
+                )
+                self.log.info(
+                    f"rollover-  unsubscribed {iid} (expired)",
+                    color=LogColor.YELLOW,
+                )
 
     def _takeable_shares(self, iid: InstrumentId) -> float:
         """Sum of ask qty at prices ≤ max_no_price. 0 if book empty or no qualifying asks."""
@@ -291,18 +404,15 @@ class ConsensusFadeStrategy(Strategy):
 
     def _maybe_take(self, iid: InstrumentId) -> None:
         """If there's takeable liquidity and room under the cap, submit IOC BUY."""
-        # Skip if an IOC for this market is still resolving.
         if iid in self._state.pending:
-            return
-        # Skip if we've already hit the per-market cap (or can't meet minimum).
+            return  # an IOC is still resolving on this market
         pos = self._state.positions.get(iid, 0)
         room = self.config.shares_per_market - pos
         if room < self.config.min_order_shares:
-            return
-        # Skip if no qualifying asks are currently on the book.
+            return  # per-market cap hit (or close to it)
         takeable = self._takeable_shares(iid)
         if takeable < self.config.min_order_shares:
-            return
+            return  # nothing in-range on the book right now
 
         qty = int(min(takeable, room))
         self._submit_ioc_buy(iid, qty)
@@ -370,8 +480,8 @@ class ConsensusFadeStrategy(Strategy):
             f"fee={event.commission}  pos={self._state.positions[iid]}",
             color=LogColor.GREEN,
         )
-        # IOC terminal state might be either fully-filled or partial-fill+cancel.
-        # Check if the order is now closed and clear pending if so.
+        # IOC terminal state: either fully filled (FILLED) or partial-fill+cancel.
+        # Clear pending when the order goes closed.
         order = self.cache.order(event.client_order_id)
         if order is not None and order.is_closed:
             self._state.pending.pop(iid, None)
