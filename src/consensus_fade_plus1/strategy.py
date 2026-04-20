@@ -361,19 +361,28 @@ class ConsensusFadeStrategy(Strategy):
     def _unsubscribe_expired(self) -> None:
         """Scan subscribed instruments; unsubscribe any past their expiration.
 
-        Throttled to every EXPIRY_CHECK_INTERVAL_NS (5 min). Markets resolve
-        at `end_date` midnight UTC; `instrument.expiration_ns` reflects this.
+        Throttled to every EXPIRY_CHECK_INTERVAL_NS (5 min).
+
+        Grace period: Polymarket's Gamma API returns `end_date_iso` as a
+        date string ("2026-04-20") which Nautilus's adapter parses as
+        midnight UTC. But the actual market end_date is typically noon UTC
+        that day (or later), and resolution can happen hours after. To
+        avoid prematurely unsubscribing from markets still in their final
+        trading window, we apply a 24h grace before considering expired.
         """
         now_ns = self.clock.timestamp_ns()
         if now_ns - self._state.last_expiry_check_ns < EXPIRY_CHECK_INTERVAL_NS:
             return
         self._state.last_expiry_check_ns = now_ns
 
+        # 24h grace — see docstring
+        grace_ns = 24 * 60 * 60 * 1_000_000_000
+
         for iid in list(self._state.subscribed):
             inst = self.cache.instrument(iid)
             if inst is None:
                 continue
-            if inst.expiration_ns and inst.expiration_ns < now_ns:
+            if inst.expiration_ns and inst.expiration_ns + grace_ns < now_ns:
                 self.unsubscribe_order_book_deltas(iid)
                 self._state.subscribed.discard(iid)
                 self._state.active.pop(iid, None)
