@@ -38,11 +38,8 @@ dependencies = [
     "structlog>=24.4",          # structured logging
     "pytz>=2026.1.post1",
     "scikit-learn>=1.8.0",
-    "lightgbm>=4.6.0",
-    # --- live execution ---
-    "py-clob-client>=0.20",     # Polymarket CLOB client (order placement)
-    "web3>=7.0",                # Polygon RPC — allowance setup
-    "eth-account>=0.13",        # wallet derivation
+    "lightgbm>=4.6.0",        # wallet derivation
+    "nautilus-trader>=1.225.0",
 ]
 
 [project.scripts]

@@ -1,130 +1,109 @@
-"""Consensus-Fade +1 Offset signal generation.
+"""Consensus-Fade +1 Offset — Nautilus Strategy.
 
-For a given target date:
-1. Pull per-city NBS + GFS + HRRR forecasts from features parquet
-2. Compute consensus_spread = max - min
-3. For each city with spread ≤ threshold, identify NBS_fav + 1 bucket
-4. Return list of BUY-NO recommendations
+Read this file top to bottom. The logic is dead simple:
 
-No order placement happens here — this is a pure signal-generation
-module. Submission lives in cli.py / orders.py.
+  1. On start: for each market where the 3 forecasts agree, place a SINGLE
+     resting limit BUY at our max acceptable NO price, for our full
+     per-market budget. Polymarket's matching engine takes care of the rest.
+
+  2. As new retail YES-bids appear (equivalent to new NO asks ≤ our price),
+     the CLOB automatically matches them against our resting order. We fill
+     at their price (always ≤ our limit), they at ours. Polymarket maker
+     fee = 0, so every fill is clean edge.
+
+  3. On fill: log it. The resting order keeps going until its full quantity
+     is consumed (= we hit our per-market position cap) or we stop the node.
+
+  4. On stop: cancel whatever didn't fill.
+
+Why this works:
+  A limit BUY at $0.92 IS the "range order" the user asked for — it matches
+  against every ask price in [0.01, 0.92] as new liquidity arrives. We never
+  need to re-price, re-submit, or watch the book. Set it and forget it.
+
+  The "streaming data" matters for DISCOVERING which markets qualify, not
+  for matching orders. Discovery happens in discover.py; matching happens
+  inside Polymarket.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
-
-from lib.polymarket.markets import BucketMarket, find_nbs_fav_plus1, get_city_buckets
-from lib.weather.consensus import consensus_spread
-from lib.weather.forecasts import get_all_cities
-
-# Pre-registered parameters (see STRATEGY.md §3)
-DEFAULT_CONSENSUS_MAX_F = 3.0
-DEFAULT_MIN_YES_PRICE = 0.005
-DEFAULT_MAX_YES_PRICE = 0.5
-DEFAULT_FEE_RATE = 0.05
-EXPECTED_HIT_RATE = 0.97  # NO wins ~97% of the time under consensus filter
+from nautilus_trader.common.enums import LogColor
+from nautilus_trader.config import StrategyConfig
+from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.events import OrderFilled
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.trading.strategy import Strategy
 
 
-@dataclass
-class Recommendation:
-    """One trade recommendation (not yet submitted)."""
-    city: str
-    market_date: date
-    consensus_spread: float
-    nbs_pred: float
-    gfs_pred: float
-    hrrr_pred: float | None
-    nbs_fav_bucket_title: str
-    nbs_fav_bucket_idx: int
-    plus1_bucket: BucketMarket
-    # Market-state estimates (may be stale — fetch fresh at submit time)
-    yes_price_estimate: float | None = None
-    no_ask_estimate: float | None = None
+class ConsensusFadeConfig(StrategyConfig, frozen=True):
+    """Parameters for the strategy."""
 
-    def est_edge_pp(self) -> float | None:
-        """Estimated edge in percentage points (market-implied - actual)."""
-        if self.no_ask_estimate is None:
-            return None
-        return (EXPECTED_HIT_RATE - self.no_ask_estimate) * 100
+    # Nautilus InstrumentId strings for the NO tokens we've discovered.
+    # Populated by node.py from discover.discover_tradeable_markets().
+    instrument_ids: list[str]
+
+    # Max NO price we're willing to pay. Fair NO = 0.97 (hit rate from
+    # backtest); 0.92 implies ~5¢ of edge buffer. Above this we don't quote.
+    max_no_price: float = 0.92
+
+    # Total shares to buy per market (caps our per-market position).
+    # At max_no_price=0.92 × 110 shares ≈ $100 per market.
+    shares_per_market: int = 110
 
 
-def build_recommendations(
-    target_date: date,
-    *,
-    consensus_max: float = DEFAULT_CONSENSUS_MAX_F,
-    min_yes_price: float = DEFAULT_MIN_YES_PRICE,
-    max_yes_price: float = DEFAULT_MAX_YES_PRICE,
-) -> list[Recommendation]:
-    """Generate today's Consensus-Fade +1 recommendations.
+class ConsensusFadeStrategy(Strategy):
+    """Places one resting NO-buy per tradeable market. That's it."""
 
-    Does NOT hit the CLOB — uses the processed markets.parquet for
-    bucket metadata. Call apply_live_prices() separately to attach
-    fresh price estimates before submitting.
-    """
-    forecasts = get_all_cities(target_date)
-    out: list[Recommendation] = []
-    for f in forecasts:
-        if f.nbs_pred_max_f is None or f.gfs_pred_max_f is None:
-            continue
-        cs = consensus_spread(f, require_all_three=False)
-        if cs is None or cs > consensus_max:
-            continue
-        # Find NBS_fav + 1 bucket
-        buckets = get_city_buckets(target_date, f.city)
-        if len(buckets) < 2:
-            continue
-        fav = min(buckets, key=lambda b: abs(b.bucket_center - f.nbs_pred_max_f))
-        plus1 = find_nbs_fav_plus1(buckets, f.nbs_pred_max_f, offset=1)
-        if plus1 is None:
-            continue
-        out.append(Recommendation(
-            city=f.city,
-            market_date=target_date,
-            consensus_spread=float(cs),
-            nbs_pred=float(f.nbs_pred_max_f),
-            gfs_pred=float(f.gfs_pred_max_f),
-            hrrr_pred=f.hrrr_pred_max_f,
-            nbs_fav_bucket_title=fav.bucket_title,
-            nbs_fav_bucket_idx=fav.bucket_idx,
-            plus1_bucket=plus1,
-        ))
-    return out
+    def __init__(self, config: ConsensusFadeConfig) -> None:
+        super().__init__(config)
 
+    # --- Lifecycle --------------------------------------------------------
 
-def apply_live_prices(
-    client, recs: list[Recommendation], *,
-    min_yes_price: float = DEFAULT_MIN_YES_PRICE,
-    max_yes_price: float = DEFAULT_MAX_YES_PRICE,
-) -> list[Recommendation]:
-    """Attach fresh YES-mid / NO-ask to each recommendation via CLOB.
+    def on_start(self) -> None:
+        """Place one limit BUY per market at our max NO price."""
+        for iid_str in self.config.instrument_ids:
+            instrument_id = InstrumentId.from_str(iid_str)
+            instrument = self.cache.instrument(instrument_id)
+            if instrument is None:
+                self.log.error(f"Instrument not in cache: {iid_str}")
+                continue
 
-    Filters out recommendations whose YES midpoint is outside
-    [min_yes_price, max_yes_price].
-    """
-    out: list[Recommendation] = []
-    for r in recs:
-        book = client.get_order_book(r.plus1_bucket.yes_token_id)
-        bids = getattr(book, "bids", []) or []
-        asks = getattr(book, "asks", []) or []
-        if not bids or not asks:
-            continue
-        # pyclob returns OrderSummary objects with .price / .size (strings)
-        top_bid = max(float(b.price) for b in bids)
-        top_ask = min(float(a.price) for a in asks)
-        yes_mid = (top_bid + top_ask) / 2
-        no_ask = 1 - top_bid  # to BUY NO at this price, match YES-bid
-        r2 = Recommendation(
-            city=r.city, market_date=r.market_date,
-            consensus_spread=r.consensus_spread,
-            nbs_pred=r.nbs_pred, gfs_pred=r.gfs_pred, hrrr_pred=r.hrrr_pred,
-            nbs_fav_bucket_title=r.nbs_fav_bucket_title,
-            nbs_fav_bucket_idx=r.nbs_fav_bucket_idx,
-            plus1_bucket=r.plus1_bucket,
-            yes_price_estimate=yes_mid,
-            no_ask_estimate=no_ask,
+            price = self._snap_to_tick(self.config.max_no_price, instrument)
+            qty = Quantity.from_int(self.config.shares_per_market)
+            order = self.order_factory.limit(
+                instrument_id=instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=qty,
+                price=price,
+                time_in_force=TimeInForce.GTC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"QUOTING  {instrument_id}  BUY {qty} @ {price} "
+                f"(fills against any ask ≤ {price})",
+                color=LogColor.CYAN,
+            )
+
+    def on_stop(self) -> None:
+        """Cancel every open order this strategy owns."""
+        for order in self.cache.orders_open(strategy_id=self.id):
+            self.cancel_order(order)
+
+    # --- Events -----------------------------------------------------------
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        """Got a fill. Just log it — the remainder stays resting automatically."""
+        self.log.info(
+            f"FILL  {event.instrument_id}  {event.last_qty} @ {event.last_px}  "
+            f"fee={event.commission}",
+            color=LogColor.GREEN,
         )
-        if yes_mid < min_yes_price or yes_mid > max_yes_price:
-            continue
-        out.append(r2)
-    return out
+
+    # --- Helpers ----------------------------------------------------------
+
+    def _snap_to_tick(self, price_float: float, instrument) -> Price:
+        """Round a float price down onto the market's tick grid."""
+        tick = instrument.price_increment
+        ticks = int(price_float / float(tick))
+        return Price(ticks * float(tick), precision=tick.precision)

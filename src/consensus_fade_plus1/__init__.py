@@ -1,12 +1,15 @@
-"""Consensus-Fade +1 Offset strategy — live execution package.
+"""Consensus-Fade +1 Offset — live Polymarket weather strategy (Nautilus).
 
-See STRATEGY.md in this folder for the full design doc.
+Package layout (4 files, read in this order):
 
-Public API:
-- `strategy.Recommendation` — one trade recommendation
-- `strategy.build_recommendations(date)` — compute today's list
-- `cli.main` — CLI entry point (via `uv run cfp`)
+    discover.py    — what to trade today (consensus-tight +1 buckets)
+    strategy.py    — the Nautilus Strategy (placing resting NO-buys)
+    node.py        — TradingNode builder + live runner
+    cli.py         — operator entry point
+
+Plus:
+    setup.py       — one-time wallet bootstrap
+    backtest.py    — historical reproducer
+    STRATEGY.md    — design doc (thesis, signal, backtest stats)
+    ARCHITECTURE.md — how these pieces fit together
 """
-from consensus_fade_plus1.strategy import Recommendation, build_recommendations
-
-__all__ = ["Recommendation", "build_recommendations"]
