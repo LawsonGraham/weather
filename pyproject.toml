@@ -39,7 +39,13 @@ dependencies = [
     "pytz>=2026.1.post1",
     "scikit-learn>=1.8.0",
     "lightgbm>=4.6.0",        # wallet derivation
-    "nautilus-trader>=1.225.0",
+    # Pinned to f6f2a76 on develop (2026-04-19) — the Polymarket auto-load PR.
+    # This lets `subscribe_order_book_deltas(new_iid)` transparently fetch new
+    # instruments from Gamma on cache miss, which is load-bearing for our
+    # continuous daily-market rollover. See src/consensus_fade_plus1/ARCHITECTURE.md.
+    # Re-audit before bumping: https://github.com/nautechsystems/nautilus_trader/compare/f6f2a76...develop
+    "nautilus-trader @ git+https://github.com/nautechsystems/nautilus_trader.git@f6f2a76c37b67eeadad9a78834d6d88b93f6f5fe",
+    "py-clob-client>=0.34.6",
 ]
 
 [project.scripts]
@@ -149,3 +155,7 @@ addopts = [
 # Use src/ layout for the installable package
 [tool.hatch.build.targets.wheel]
 packages = ["src/consensus_fade_plus1", "src/lib"]
+
+# Allow git/URL deps in project.dependencies (for the pinned nautilus_trader).
+[tool.hatch.metadata]
+allow-direct-references = true
