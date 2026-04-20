@@ -193,6 +193,46 @@ def cmd_cancel_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Run the data-ingestion daemon (all weather + market watchers)."""
+    import asyncio
+    from consensus_fade_plus1.daemon import run
+    print("[cfp daemon] starting. Ctrl+C to stop cleanly.")
+    return asyncio.run(run())
+
+
+def cmd_watchers(args: argparse.Namespace) -> int:
+    """Print the current state of each watcher."""
+    import json
+    from pathlib import Path
+    state_dir = REPO_ROOT / "data" / "processed" / "watchers"
+    if not state_dir.exists():
+        print("No watcher state yet — run `uv run cfp daemon` first.")
+        return 0
+    files = sorted(state_dir.glob("*.state.json"))
+    if not files:
+        print("No watchers have run yet.")
+        return 0
+    for f in files:
+        try:
+            s = json.loads(f.read_text())
+        except Exception as e:
+            print(f"  {f.stem}: (failed to parse: {e})")
+            continue
+        name = s.get("name", f.stem)
+        last_ok = s.get("last_success_at") or "never"
+        last_err = s.get("last_error") or "—"
+        fails = s.get("consecutive_failures", 0)
+        total = s.get("total_polls", 0)
+        succ = s.get("total_successes", 0)
+        fail = s.get("total_failures", 0)
+        print(f"  {name:<12}  last_ok={last_ok}  polls={total} "
+              f"ok={succ} fail={fail} streak={fails}")
+        if last_err != "—":
+            print(f"               last_error: {last_err}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from lib.polymarket.client import load_client_from_env
     from lib.polymarket.orders import list_open_orders
@@ -322,6 +362,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_status = sub.add_parser("status", help="Account + open orders")
     p_status.set_defaults(func=cmd_status)
+
+    p_daemon = sub.add_parser("daemon",
+        help="Run all data watchers continuously (polls weather + markets)")
+    p_daemon.set_defaults(func=cmd_daemon)
+
+    p_watchers = sub.add_parser("watchers",
+        help="Show the status of each watcher (last poll, errors, etc.)")
+    p_watchers.set_defaults(func=cmd_watchers)
 
     args = ap.parse_args(argv)
     try:
