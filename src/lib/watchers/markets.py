@@ -45,14 +45,30 @@ class MarketsWatcher(Watcher):
         loop = asyncio.get_running_loop()
 
         cities_arg = ",".join(CITIES)
+        # Generous per-step timeouts: the FIRST run after a long gap walks
+        # thousands of new slugs at ~0.5-2s each and legitimately takes 10+
+        # minutes. Steady-state runs are seconds. Our watcher's
+        # time-based throttle (FETCH_INTERVAL_MIN=60) already prevents
+        # excessive refreshes, so the timeout is a fail-safe, not a normal
+        # operating bound.
         steps = [
+            # --refresh bypasses the 10-day gamma-response cache in the slug
+            # downloader. Without it, the watcher happily re-uses stale
+            # cached responses from weeks ago, producing a markets.parquet
+            # that silently lacks any newly-listed days' markets. This was
+            # the root cause of an "all 0 tradeable markets" bug.
             ("slugs", ["uv", "run", "python",
-                       "scripts/polymarket_weather_slugs/download.py"], 120),
+                       "scripts/polymarket_weather_slugs/download.py",
+                       "--refresh"], 300),
             ("markets", ["uv", "run", "python",
                          "scripts/polymarket_weather/download.py",
-                         "--cities", cities_arg], 300),
+                         "--cities", cities_arg], 1200),
+            # Force transform to rebuild; without --force it no-ops based on
+            # its own manifest even when markets.parquet is stale relative
+            # to raw Gamma data.
             ("transform", ["uv", "run", "python",
-                           "scripts/polymarket_weather/transform.py"], 180),
+                           "scripts/polymarket_weather/transform.py",
+                           "--force"], 300),
         ]
         for label, cmd, timeout in steps:
             rc, _, err = await loop.run_in_executor(
