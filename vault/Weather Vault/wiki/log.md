@@ -112,3 +112,15 @@
 - Branch: `wt/backtest-v2`; code + data at `notebooks/experiments/backtest-v2/` + `data/processed/backtest_v2/`
 - Contradictions: supersedes all claims in [[2026-04-11 Strategy D deployment refinements]] for Mar 11+ sample; the geographic OOS in [[out_of_sample_validation.md]] tested portability, not persistence — leaves the period-decay gap now measured here
 
+## [2026-04-16] capture | Polymarket CLOB execution reference
+
+- Page: wiki/concepts/Polymarket CLOB execution.md
+- Trigger: need to wire up live order submission for [[strategies/consensus_fade_plus1]] (Strategy C'). Current recommender is a display-only tool; next step is actual execution.
+- Canonical library: `py-clob-client` v1 (mature, documented). v2 exists but examples target v1.
+- Auth: L1 (EIP-712 private-key) for signing, L2 (5 HMAC headers) for API. `client.create_or_derive_api_creds()` is one-time deterministic derive per wallet.
+- Key operational facts: `min_order_size=15` shares on recent markets (not 5); tick usually 0.01 but variable; weather markets are NegRisk; `buy NO = BUY side on NO token_id`, not a flag.
+- No meaningful testnet — smoke-test with $1-5 post-only orders on deep-liquidity non-weather markets.
+- Rate limits are generous (3500 POST/order per 10s) — bot at ~5 orders/day is never binding.
+- Watch out for: chain_id=POLYGON (not Amoy default), neg_risk=True for weather, US IP geoblock.
+- Related: [[Polymarket]], [[Polymarket CLOB WebSocket]]
+

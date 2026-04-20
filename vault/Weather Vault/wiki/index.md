@@ -39,6 +39,7 @@ _Ideas and methods: HRRR, MOS, TAF, calibration, Kelly sizing, ensemble spread, 
 - [[ASOS 1-minute]] — 1-minute-resolution surface weather observations; Layer 1 ground truth
 - [[Data Validation]] — paranoid first-principles audit methodology for every data source; 6-level rigor ladder + historical bug record
 - [[METAR]] — Layer 3 aviation routine + SPECI observations from IEM: schema, RMK-group decoding, market-relevance shortcuts
+- [[Polymarket CLOB execution]] — REST + WSS order placement via `py-clob-client`: auth derivation, allowances, order types, cancellation, rate limits. Deployment reference for `strategies/consensus_fade_plus1/`.
 - [[Polymarket CLOB WebSocket]] — live L2 book + price_change + last_trade_price stream; the only way to get book depth and real-time fills
 - [[Polymarket prices_history endpoint]] — CLOB `/prices-history` REST endpoint; hourly midpoint for all markets, 1-min for open markets (past 24 h)
 - [[Polymarket weather market catalog]] — the committed slug catalog at `weather-market-slugs/polymarket.csv` that every Polymarket script keys off
