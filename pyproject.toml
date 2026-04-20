@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "weather"
 version = "0.1.0"
@@ -35,7 +39,14 @@ dependencies = [
     "pytz>=2026.1.post1",
     "scikit-learn>=1.8.0",
     "lightgbm>=4.6.0",
+    # --- live execution ---
+    "py-clob-client>=0.20",     # Polymarket CLOB client (order placement)
+    "web3>=7.0",                # Polygon RPC — allowance setup
+    "eth-account>=0.13",        # wallet derivation
 ]
+
+[project.scripts]
+cfp = "consensus_fade_plus1.cli:main"
 
 # Dev-only dependencies. Installed with `uv sync` by default.
 # These are NOT in `dependencies` so they don't ship to prod.
@@ -123,7 +134,7 @@ reportMissingModuleSource = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]              # repo root is importable — lets any top-level
+pythonpath = [".", "src"]       # repo root + src/ importable — lets any top-level
                                 # folder act as a namespace package
 addopts = [
     "-v",
@@ -137,3 +148,7 @@ addopts = [
 # Nothing to override for now — defaults are fine. If you later want to pin
 # an index URL, set `index-url` here. If you want uv to manage Python itself,
 # it already does: `uv python install 3.13` / pinned via `.python-version`.
+
+# Use src/ layout for the installable package
+[tool.hatch.build.targets.wheel]
+packages = ["src/consensus_fade_plus1", "src/lib"]

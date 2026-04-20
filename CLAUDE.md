@@ -187,18 +187,27 @@ The lock file is gitignored (`.main-repo-lock` in `.gitignore`); it's runtime st
 
 ## Strategy conventions
 
-Deployable trading strategies live at `strategies/<name>/` at the repo root — one folder per distinct edge. Each folder MUST contain:
+Deployable trading strategies live at `src/<strategy_name>/` — one folder per distinct edge. Each strategy folder MUST contain:
 
 - `STRATEGY.md` — thesis, signal definition, execution rules, backtest results with IS/OOS split, capacity analysis, risk/kill-switches, deployment checklist. Written in normal prose (not caveman).
-- `recommender.py` — given today's data, emits recommended trades (does NOT submit orders).
+- `strategy.py` — pure signal generation (data in → recommendations out). No order placement, no CLOB calls.
+- `cli.py` — command-line interface with standard subcommands (`setup`, `recommend`, `submit`, `cancel-all`, `status`). Registered in `pyproject.toml` under `[project.scripts]`.
 - `backtest.py` — reproduces the historical stats printed in `STRATEGY.md`.
 
-Index all active strategies from `strategies/README.md`. A retracted strategy should be removed (per Rule 6) with the retraction captured as a `wiki/syntheses/` page rather than left as dead code.
+Strategies import shared infrastructure from `src/lib/`:
+- `src/lib/polymarket/` — CLOB client wrapper, one-time setup (allowances + API creds), order placement, market metadata
+- `src/lib/weather/` — forecast loaders, consensus helpers
+- Add new `src/lib/<thing>/` packages when >1 strategy needs them; don't pre-create.
+
+Index all active strategies from `src/README.md`. A retracted strategy should be removed (per Rule 6) with the retraction captured as a `wiki/syntheses/` page rather than left as dead code.
 
 Separation of concerns:
-- **`scripts/<source>/`** — data ingestion / transformation
+- **`scripts/<source>/`** — data ingestion / transformation (stage 1 pipelines)
 - **`notebooks/experiments/<topic>/`** — exploratory research where strategies are discovered
-- **`strategies/<name>/`** — deployable artifact once an edge has passed a clean IS/OOS holdout
+- **`src/lib/<package>/`** — shared, installable infrastructure libraries
+- **`src/<strategy_name>/`** — deployable strategy artifact with its own CLI
+
+`pythonpath = [".", "src"]` in `pyproject.toml` makes both `scripts.*` and `src.*`-level modules importable without a nested package prefix.
 
 ## Language and tooling
 
@@ -316,10 +325,15 @@ weather/
 │   ├── transform.py              # stage 2 (optional): raw → data/{interim,processed}/
 │   └── validate.py               # optional post-run sanity check
 ├── notebooks/                    # Marimo reactive notebooks (expl_, val_, calib_, ...)
-├── strategies/<name>/            # deployable trading strategies
-│   ├── STRATEGY.md               # thesis, execution rules, backtest, risks
-│   ├── recommender.py            # live: today's recommendations (no order submission)
-│   └── backtest.py               # reproduces historical stats
+├── src/                          # installable Python packages (src layout)
+│   ├── lib/                      # shared infrastructure libraries
+│   │   ├── polymarket/           # CLOB client, auth, order placement
+│   │   └── weather/              # forecast loaders, consensus helpers
+│   └── <strategy_name>/          # one folder per deployable strategy
+│       ├── STRATEGY.md           # design doc
+│       ├── strategy.py           # signal generation
+│       ├── cli.py                # CLI entry point (setup/recommend/submit/...)
+│       └── backtest.py           # reproduces historical stats
 ├── weather-market-slugs/         # committed slug catalogs (carveout from no-CSV rule)
 ├── pyproject.toml                # deps + ruff + pyright + pytest config
 ├── .python-version               # pinned Python (3.13)

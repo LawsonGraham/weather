@@ -208,7 +208,7 @@ def main() -> int:
               f"per=${s.per_trade_pnl:>+.4f}  tot=${s.total_pnl:>+.2f}  t={s.t_stat:>+.2f}")
 
     # === DAILY AGGREGATE ===
-    print(f"\n=== Daily aggregate (primary strategy) ===")
+    print("\n=== Daily aggregate (primary strategy) ===")
     daily = t.groupby("date").agg(
         n_trades=("pnl", "count"),
         day_pnl=("pnl", "sum"),
