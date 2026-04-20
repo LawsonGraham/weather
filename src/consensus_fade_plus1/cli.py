@@ -217,14 +217,46 @@ def _parse_date(s: str | None) -> date:
 
 
 def _print_status(s) -> None:
-    print(f"Signer address: {s.address}")
-    print(f"USDC allowances:  {s.usdc_allowances_ok}")
-    print(f"CTF allowances:   {s.ctf_allowances_ok}")
-    print(f"API creds present: {s.api_creds_present}")
+    print(f"Signer address:  {s.address}")
+    print(f"RPC endpoint:    {s.rpc_url} ({'reachable' if s.rpc_reachable else 'UNREACHABLE'})")
+    print(f"POL balance:     {s.pol_balance:.6f} POL "
+          f"({'low' if s.pol_balance < 0.05 else 'ok'})")
+    print(f"USDC.e balance:  {s.usdc_balance:.4f} USDC.e "
+          f"({'none' if s.usdc_balance_raw == 0 else 'ok'}) "
+          f"[Polymarket settlement token]")
+    if s.usdc_native_balance_raw > 0:
+        print(f"Native USDC:     {s.usdc_native_balance:.4f} USDC "
+              f"(WRONG TOKEN — Polymarket uses USDC.e, see below)")
+    print()
+    print("USDC allowances (spender → approved):")
+    for k, v in s.usdc_allowances_ok.items():
+        print(f"  {k:<25} {'✓' if v else '✗'}")
+    print("CTF allowances:")
+    for k, v in s.ctf_allowances_ok.items():
+        print(f"  {k:<25} {'✓' if v else '✗'}")
+    print(f"API creds in .env:   {'✓' if s.api_creds_present else '✗'}")
+
     all_ok = (all(s.usdc_allowances_ok.values())
               and all(s.ctf_allowances_ok.values())
               and s.api_creds_present)
     print(f"\nStatus: {'READY' if all_ok else 'NOT READY'}")
+    if not all_ok:
+        if s.pol_balance < 0.05:
+            print("  → Fund POL (formerly MATIC) on Polygon mainnet for gas")
+        if s.has_wrong_token:
+            print("  → You have NATIVE USDC but Polymarket requires USDC.e (bridged).")
+            print("    Swap native USDC → USDC.e on Uniswap:")
+            print("    https://app.uniswap.org/#/swap"
+                  "?inputCurrency=0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+                  "&outputCurrency=0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+                  "&chain=polygon")
+        elif s.usdc_balance_raw == 0:
+            print("  → Fund USDC.e on Polygon mainnet for collateral")
+            print("    (NOT native USDC — contract 0x2791Bca1...)")
+        if not all(s.usdc_allowances_ok.values()) or not all(s.ctf_allowances_ok.values()):
+            print("  → Run `uv run cfp setup` to complete approvals")
+        if not s.api_creds_present:
+            print("  → Run `uv run cfp setup` to derive + persist API credentials")
 
 
 def _print_recs(recs, *, with_prices: bool = False) -> None:
@@ -258,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="cfp",
         description="Consensus-Fade +1 Offset — weather market fade strategy",
     )
+    ap.add_argument("--verbose", action="store_true",
+                    help="Show full tracebacks on error")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_setup = sub.add_parser("setup", help="One-time wallet setup")
@@ -293,12 +327,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except RuntimeError as e:
-        # Friendly errors (missing env, etc.) — no traceback needed
         sys.stderr.write(f"\nError: {e}\n")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
         return 2
     except KeyboardInterrupt:
         sys.stderr.write("\nInterrupted.\n")
         return 130
+    except Exception as e:
+        # Unexpected errors — always print something useful
+        sys.stderr.write(f"\nUnexpected error: {type(e).__name__}: {e}\n")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        else:
+            sys.stderr.write("(run with --verbose for full traceback)\n")
+        return 2
 
 
 if __name__ == "__main__":
