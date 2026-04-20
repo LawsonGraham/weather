@@ -76,6 +76,16 @@ BOOK_DEPTH = 10  # levels subscribed + persisted per side
 # don't need sub-second cadence for something that changes daily.
 EXPIRY_CHECK_INTERVAL_NS = 5 * 60 * 1_000_000_000  # 5 min
 
+# Don't re-submit an IOC on the same instrument for this long after a reject.
+# Prevents a tight TAKE→REJECT loop from spamming the exchange (common if
+# the account is geoblocked, signature-invalid, or the venue is degraded).
+REJECT_COOLDOWN_NS = 5 * 60 * 1_000_000_000  # 5 min
+
+# If we accumulate this many consecutive rejects without any fill,
+# flip the circuit breaker and stop submitting orders. Manual restart
+# (cfp run again) resets it.
+CIRCUIT_BREAKER_THRESHOLD = 20
+
 
 # -----------------------------------------------------------------------------
 # Config
@@ -139,6 +149,18 @@ class StrategyState:
 
     # Throttle control for the expired-unsubscribe scan.
     last_expiry_check_ns: int = 0
+
+    # Per-instrument rejection cooldown. When an IOC on instrument X is
+    # rejected (e.g., geoblock, signature reject, venue maintenance), we
+    # skip X for REJECT_COOLDOWN_NS before trying again. Prevents a tight
+    # rejection loop from hammering the exchange API.
+    last_reject_ns: dict[InstrumentId, int] = field(default_factory=dict)
+
+    # Global circuit breaker: if we've accumulated CIRCUIT_BREAKER_THRESHOLD
+    # consecutive rejects (across all markets) without any fill, flip this
+    # flag and refuse to submit more orders. Manual restart required to reset.
+    total_rejects_streak: int = 0
+    circuit_broken: bool = False
 
     # Loop control.
     running: bool = False
@@ -413,8 +435,14 @@ class ConsensusFadeStrategy(Strategy):
 
     def _maybe_take(self, iid: InstrumentId) -> None:
         """If there's takeable liquidity and room under the cap, submit IOC BUY."""
+        if self._state.circuit_broken:
+            return  # global circuit breaker tripped
         if iid in self._state.pending:
             return  # an IOC is still resolving on this market
+        # Per-instrument cooldown after a rejection
+        last_reject = self._state.last_reject_ns.get(iid, 0)
+        if last_reject and self.clock.timestamp_ns() - last_reject < REJECT_COOLDOWN_NS:
+            return
         pos = self._state.positions.get(iid, 0)
         room = self.config.shares_per_market - pos
         if room < self.config.min_order_shares:
@@ -470,6 +498,8 @@ class ConsensusFadeStrategy(Strategy):
         )
 
     def on_order_filled(self, event: OrderFilled) -> None:
+        # Any fill breaks the reject streak (exchange is clearly accepting orders).
+        self._state.total_rejects_streak = 0
         qty = int(float(str(event.last_qty)))
         iid = event.instrument_id
         delta = qty if event.order_side == OrderSide.BUY else -qty
@@ -505,6 +535,25 @@ class ConsensusFadeStrategy(Strategy):
 
     def on_order_rejected(self, event: OrderRejected) -> None:
         self._state.pending.pop(event.instrument_id, None)
+        # Cooldown on this instrument + global circuit breaker
+        self._state.last_reject_ns[event.instrument_id] = self.clock.timestamp_ns()
+        self._state.total_rejects_streak += 1
+        tripped = (
+            self._state.total_rejects_streak >= CIRCUIT_BREAKER_THRESHOLD
+            and not self._state.circuit_broken
+        )
+        if tripped:
+            self._state.circuit_broken = True
+            self._ledger.log(
+                "circuit_broken",
+                consecutive_rejects=self._state.total_rejects_streak,
+                threshold=CIRCUIT_BREAKER_THRESHOLD,
+            )
+            self.log.error(
+                f"CIRCUIT BREAKER TRIPPED after "
+                f"{self._state.total_rejects_streak} consecutive rejects — "
+                f"no more orders will be submitted this session. Restart to reset.",
+            )
         self._ledger.log(
             "rejected",
             client_order_id=str(event.client_order_id),
