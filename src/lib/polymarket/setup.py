@@ -98,7 +98,10 @@ def check_setup(dotenv_path: Path | str | None = None) -> SetupStatus:
     """Read-only status check — does NOT submit any transactions."""
     if dotenv_path is None:
         dotenv_path = REPO_ROOT / ".env"
-    load_dotenv(dotenv_path, override=False)
+    # override=True so we always reload the latest .env values. Without this,
+    # if creds were just written in the same process by _derive_and_persist_creds,
+    # the final status check would still show them missing.
+    load_dotenv(dotenv_path, override=True)
 
     pk = os.environ.get("PK")
     if not pk:
@@ -249,45 +252,77 @@ def _ensure_allowances(pk: str, status: SetupStatus) -> None:
     usdc = w3.eth.contract(address=w3.to_checksum_address(USDC_CONTRACT), abi=ERC20_ABI)
     ctf = w3.eth.contract(address=w3.to_checksum_address(CTF_CONTRACT), abi=ERC1155_ABI)
 
-    def _send(tx_func, *, label: str):
-        nonce = w3.eth.get_transaction_count(acct.address)
-        # Grab current base fee from chain and add a 2 gwei priority tip.
-        try:
-            block = w3.eth.get_block("latest")
-            base_fee = int(block.get("baseFeePerGas", w3.to_wei(30, "gwei")))
-        except Exception:
-            base_fee = w3.to_wei(30, "gwei")
-        priority = w3.to_wei(30, "gwei")  # Polygon requires ≥30 gwei priority
-        max_fee = base_fee * 2 + priority
-        tx = tx_func.build_transaction({
-            "from": acct.address,
-            "nonce": nonce,
-            "chainId": 137,
-            "gas": 200_000,
-            "maxFeePerGas": max_fee,
-            "maxPriorityFeePerGas": priority,
-        })
-        try:
-            signed = acct.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        except Exception as e:
-            raise RuntimeError(
-                f"[setup] {label}: failed to submit tx: {e}"
-            ) from e
-        print(f"[setup] {label}: sent tx 0x{tx_hash.hex()}")
-        try:
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        except Exception as e:
-            raise RuntimeError(
-                f"[setup] {label}: tx 0x{tx_hash.hex()} not confirmed within 120s: {e}. "
-                f"Check https://polygonscan.com/tx/0x{tx_hash.hex()}"
-            ) from e
-        if receipt["status"] != 1:
-            raise RuntimeError(
-                f"[setup] {label}: tx 0x{tx_hash.hex()} reverted on-chain. "
-                f"See https://polygonscan.com/tx/0x{tx_hash.hex()}"
-            )
-        print(f"[setup] {label}: confirmed in block {receipt['blockNumber']}")
+    import time
+
+    def _send(tx_func, *, label: str, max_attempts: int = 3):
+        """Submit a tx with retry on mempool drops and nonce races."""
+        for attempt in range(1, max_attempts + 1):
+            # Use `pending` nonce so back-to-back txs don't race the RPC's
+            # confirmed-nonce counter.
+            nonce = w3.eth.get_transaction_count(acct.address, "pending")
+            try:
+                block = w3.eth.get_block("latest")
+                base_fee = int(block.get("baseFeePerGas", w3.to_wei(30, "gwei")))
+            except Exception:
+                base_fee = w3.to_wei(30, "gwei")
+            # Bump priority on retry to out-price the (possibly dropped) original
+            priority = w3.to_wei(30 + (attempt - 1) * 20, "gwei")
+            max_fee = base_fee * 2 + priority
+            tx = tx_func.build_transaction({
+                "from": acct.address,
+                "nonce": nonce,
+                "chainId": 137,
+                "gas": 200_000,
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": priority,
+            })
+            try:
+                signed = acct.sign_transaction(tx)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            except Exception as e:
+                msg = str(e).lower()
+                if "nonce too low" in msg and attempt < max_attempts:
+                    print(f"[setup] {label}: nonce race, retrying (attempt {attempt+1})")
+                    time.sleep(2)
+                    continue
+                raise RuntimeError(
+                    f"[setup] {label}: failed to submit tx: {e}"
+                ) from e
+            print(f"[setup] {label}: sent tx 0x{tx_hash.hex()}")
+            try:
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            except Exception as e:
+                # Tx was accepted but not mined. Check if it's actually dropped
+                # from the mempool — if so, we can retry with a new nonce.
+                try:
+                    w3.eth.get_transaction(tx_hash)
+                    # Still in mempool — keep waiting with a longer timeout
+                    print(f"[setup] {label}: tx still pending, waiting 60s more...")
+                    try:
+                        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    except Exception:
+                        raise RuntimeError(
+                            f"[setup] {label}: tx 0x{tx_hash.hex()} not confirmed in 180s. "
+                            f"Check https://polygonscan.com/tx/0x{tx_hash.hex()}"
+                        ) from None
+                except Exception:
+                    # Dropped from mempool entirely
+                    if attempt < max_attempts:
+                        print(f"[setup] {label}: tx dropped from mempool, retrying "
+                              f"(attempt {attempt+1})")
+                        time.sleep(2)
+                        continue
+                    raise RuntimeError(
+                        f"[setup] {label}: tx 0x{tx_hash.hex()} dropped from mempool "
+                        f"after {max_attempts} attempts: {e}"
+                    ) from e
+            if receipt["status"] != 1:
+                raise RuntimeError(
+                    f"[setup] {label}: tx 0x{tx_hash.hex()} reverted on-chain. "
+                    f"See https://polygonscan.com/tx/0x{tx_hash.hex()}"
+                )
+            print(f"[setup] {label}: confirmed in block {receipt['blockNumber']}")
+            return
 
     for name, addr in EXCHANGE_CONTRACTS.items():
         spender = Web3.to_checksum_address(addr)
