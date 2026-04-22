@@ -35,7 +35,9 @@ class HRRRWatcher(Watcher):
         idx_key = (f"hrrr.{cycle.strftime('%Y%m%d')}/conus/"
                    f"hrrr.t{cycle.strftime('%H')}z.wrfsfcf06.grib2.idx")
         url = f"{HRRR_S3}/{idx_key}"
-        async with httpx.AsyncClient(timeout=10) as client:
+        # 30s tolerates slow routes (e.g. VPN → US-east S3) without
+        # falsely reporting "no new data" on transient latency spikes.
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.head(url)
         if r.status_code != 200:
             return False

@@ -192,21 +192,22 @@ def run_setup(force_rederive: bool = False) -> int:
     print(result.stdout)
 
     # Parse out api key / secret / passphrase from script output and persist.
-    # Nautilus's script prints lines like:
-    #   POLYMARKET_API_KEY=...
-    #   POLYMARKET_API_SECRET=...
-    #   POLYMARKET_PASSPHRASE=...
-    creds = {}
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k = k.strip().strip('"').strip("'")
-        v = v.strip().strip('"').strip("'")
-        if k in ("POLYMARKET_API_KEY", "POLYMARKET_API_SECRET",
-                "POLYMARKET_PASSPHRASE"):
-            creds[k] = v
+    # Nautilus's create_api_key.py prints:
+    #   ApiCreds(api_key='...', api_secret='...', api_passphrase='...')
+    import re
+    creds: dict[str, str] = {}
+    m = re.search(
+        r"api_key=['\"]([^'\"]+)['\"].*?"
+        r"api_secret=['\"]([^'\"]+)['\"].*?"
+        r"api_passphrase=['\"]([^'\"]+)['\"]",
+        result.stdout,
+    )
+    if m:
+        creds = {
+            "POLYMARKET_API_KEY": m.group(1),
+            "POLYMARKET_API_SECRET": m.group(2),
+            "POLYMARKET_PASSPHRASE": m.group(3),
+        }
 
     if creds:
         _upsert_env(ENV_PATH, creds)

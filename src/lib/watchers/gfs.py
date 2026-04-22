@@ -68,7 +68,9 @@ class GFSWatcher(Watcher):
             "format": "csv",
         }
         headers = {"User-Agent": IEM_USER_AGENT}
-        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+        # 30s tolerates slow routes (e.g. VPN → US-central IEM) without
+        # falsely reporting "no new data" on transient latency spikes.
+        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             r = await client.get(IEM_MOS_URL, params=params)
             r.raise_for_status()
         return _parse_max_first_col(r.text)

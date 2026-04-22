@@ -47,11 +47,18 @@ class METARWatcher(Watcher):
         start = today.replace(day=1)
 
         loop = asyncio.get_running_loop()
+        # --force bypasses the manifest idempotency guard. Without it, a
+        # previous run left at status='failed' (e.g. IEM rate-limit / mid-run
+        # network hiccup) would lock out every subsequent run until someone
+        # manually unwedges it. For the current month the downloader always
+        # rewrites the partial CSV anyway, so --force is a no-op on the
+        # success path and a self-heal on the failure path.
         cmd = [
             "uv", "run", "python", "scripts/iem_metar/download.py",
             "--stations", *STATIONS,
             "--start", start.isoformat(),
             "--end", today.isoformat(),
+            "--force",
         ]
         rc, _, err = await loop.run_in_executor(
             None, lambda: run_subprocess(cmd, timeout=180),
@@ -83,7 +90,9 @@ class METARWatcher(Watcher):
             "format": "onlycomma",
             "missing": "empty",
         }
-        async with httpx.AsyncClient(timeout=15) as client:
+        # 30s tolerates slow routes (e.g. VPN → US-central IEM) without
+        # falsely reporting "no new data" on transient latency spikes.
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(IEM_ASOS_URL, params=params)
             r.raise_for_status()
         return _parse_max_second_col(r.text)
