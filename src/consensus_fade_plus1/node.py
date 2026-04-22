@@ -16,6 +16,7 @@ Env vars required (populated by `cfp setup`):
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -153,7 +154,24 @@ def run(*, max_no_price: float = 0.99,
     """
     _ensure_env()
 
-    markets = discover_tradeable_markets()
+    # Seed subscriptions across [yesterday_utc, today_utc + lookahead]. The
+    # yesterday_utc window covers Eastern markets whose market_date is "just
+    # ended in UTC" but the airport's local day hasn't ended yet (daily
+    # 20:00-23:59 EDT phenomenon). Dedup by condition_id so the same slug
+    # isn't loaded twice.
+    today_utc = datetime.now(UTC).date()
+    seen_condition_ids: set[str] = set()
+    markets: list[TradeableMarket] = []
+    for d_offset in range(-1, lookahead_days + 1):
+        try:
+            daily = discover_tradeable_markets(target_date=today_utc + timedelta(days=d_offset))
+        except FileNotFoundError:
+            continue
+        for m in daily:
+            if m.condition_id in seen_condition_ids:
+                continue
+            seen_condition_ids.add(m.condition_id)
+            markets.append(m)
     print_discovery_summary(markets)
     if not markets:
         print("[node] no markets tradeable right now — starting anyway. "

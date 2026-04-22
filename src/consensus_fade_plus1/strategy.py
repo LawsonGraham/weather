@@ -7,9 +7,12 @@ Mental model: a `while True` loop that polls our data functions every
        - subscribed set: markets we're receiving book deltas for. Grows
          as discover finds new qualifying markets (auto-loaded + subscribed
          transparently via Nautilus). Shrinks when a market resolves.
-       - active set: subset of subscribed that's tradeable RIGHT NOW
-         (end_date == today AND consensus passes AND +1 bucket valid).
-         This is the set the take logic fires on.
+       - active set: subset of subscribed whose market_date equals
+         THIS AIRPORT'S current local date. Rebuilt every tick from
+         `discovered_markets` so each airport flips at its own local
+         midnight, not at a shared UTC boundary. This is the set the
+         take logic fires on (after also passing local-hour gate and
+         market-wisdom cap).
        - positions: per-market shares owned, updated locally on fills.
   2. For each active market: if room under cap AND asks in range, fire
      an IOC BUY sized to sweep them.
@@ -163,12 +166,22 @@ class StrategyState:
     # markets appear; shrinks when a market resolves (expiration_ns passes).
     subscribed: set[InstrumentId] = field(default_factory=set)
 
-    # Subset of `subscribed` currently tradeable (end_date == today AND
-    # consensus passes). Take logic only fires on this set.
+    # All markets we've discovered across the relevant date window
+    # (yesterday UTC, today UTC, today + lookahead_days). Cached across
+    # ticks and only refreshed when features/markets mtime or UTC date
+    # changes. The `active` subset below is derived from this every tick
+    # based on per-airport LOCAL date.
+    discovered_markets: dict[InstrumentId, object] = field(default_factory=dict)
+
+    # Subset of `discovered_markets` whose market_date equals THIS
+    # AIRPORT'S local today. Take logic only fires on this set. Rebuilt
+    # every tick (cheap dict walk) so it flips when Eastern airports cross
+    # their local midnight even if UTC hasn't moved yet.
     active: dict[InstrumentId, object] = field(default_factory=dict)
 
-    # Cached discovery inputs — skip re-discover when nothing changed.
-    active_date: date | None = None
+    # Cached discovery inputs — skip the expensive discover() call when
+    # nothing upstream has changed.
+    discover_date: date | None = None
     active_features_mtime: float = 0.0
     active_markets_mtime: float = 0.0
 
@@ -340,15 +353,25 @@ class ConsensusFadeStrategy(Strategy):
     # --- Data functions (cheap, called from _tick) ------------------------
 
     def _refresh_subscribed_and_active(self) -> None:
-        """Re-run discover for today + lookahead days. Subscribe new instruments.
-        Update the active set (today-only, consensus-passing).
+        """Two-step refresh, separated so active-set flipping is independent
+        of discovery caching:
 
-        Early-returns unless one of these changed since the last refresh:
-          - today's UTC date (handles the midnight rollover)
-          - features.parquet mtime (new weather forecasts)
-          - markets.parquet mtime (new markets listed)
+          (1) When UTC date or features/markets mtime has changed, re-run
+              discover across a date window and update subscriptions +
+              `discovered_markets` cache. Covers the expensive SQL work.
+
+          (2) Every tick, rebuild `active` from `discovered_markets` by
+              filtering for `market.market_date == airport_local_today`.
+              Cheap dict walk; runs always so the active-set flips when
+              any airport crosses its LOCAL midnight, not when UTC
+              crosses midnight.
+
+        Date window for (1) is `[today_utc-1, today_utc+lookahead]` so
+        Eastern markets whose market_date is "yesterday UTC" (happens
+        20:00-23:59 EDT daily) are still discoverable, and tomorrow's
+        markets are warmed via the lookahead.
         """
-        today = datetime.now(UTC).date()
+        today_utc = datetime.now(UTC).date()
         features_mtime = (
             FEATURES_PATH.stat().st_mtime if FEATURES_PATH.exists() else 0.0
         )
@@ -356,57 +379,70 @@ class ConsensusFadeStrategy(Strategy):
             MARKETS_PATH.stat().st_mtime if MARKETS_PATH.exists() else 0.0
         )
 
-        unchanged = (
-            today == self._state.active_date
-            and features_mtime <= self._state.active_features_mtime
-            and markets_mtime <= self._state.active_markets_mtime
+        # (1) Refresh discovery cache when something upstream changed.
+        discovery_stale = (
+            today_utc != self._state.discover_date
+            or features_mtime > self._state.active_features_mtime
+            or markets_mtime > self._state.active_markets_mtime
         )
-        if unchanged:
-            return
+        if discovery_stale:
+            # Lazy imports so this module is cheap to import from the CLI.
+            from nautilus_trader.adapters.polymarket.common.symbol import (
+                get_polymarket_instrument_id,
+            )
 
-        # Lazy imports so this module is cheap to import from the CLI.
-        from nautilus_trader.adapters.polymarket.common.symbol import (
-            get_polymarket_instrument_id,
-        )
+            from consensus_fade_plus1.discover import discover_tradeable_markets
 
-        from consensus_fade_plus1.discover import discover_tradeable_markets
+            discovered: dict[InstrumentId, object] = {}
+            # yesterday_utc through today_utc + lookahead. yesterday_utc
+            # covers Eastern markets after UTC midnight (20:00 EDT onwards)
+            # whose market_date is the just-ended UTC day but the airport's
+            # local day hasn't ended yet.
+            for d_offset in range(-1, self.config.lookahead_days + 1):
+                d = today_utc + timedelta(days=d_offset)
+                try:
+                    markets = discover_tradeable_markets(target_date=d, consensus_max=3.0)
+                except FileNotFoundError:
+                    continue  # markets.parquet missing — daemon hasn't run yet
+                for m in markets:
+                    iid = get_polymarket_instrument_id(m.condition_id, m.no_token_id)
+                    if iid not in self._state.subscribed:
+                        self.subscribe_order_book_deltas(
+                            iid, book_type=BookType.L2_MBP, depth=BOOK_DEPTH,
+                        )
+                        self._state.subscribed.add(iid)
+                        self._ledger.log(
+                            "subscribed",
+                            instrument_id=str(iid),
+                            city=m.city,
+                            market_date=str(m.market_date),
+                            bucket=m.bucket_title,
+                        )
+                        self.log.info(
+                            f"rollover+  subscribed {m.city} {m.market_date} "
+                            f"({m.bucket_title})  [{iid}]",
+                            color=LogColor.GREEN,
+                        )
+                    discovered[iid] = m
+            self._state.discovered_markets = discovered
+            self._state.discover_date = today_utc
+            self._state.active_features_mtime = features_mtime
+            self._state.active_markets_mtime = markets_mtime
 
-        # Discover markets for today + lookahead days. Today's qualifying
-        # markets go into `active`; all qualifying markets become subscribed.
+        # (2) Rebuild active-set from discovered_markets, filtering on
+        #     airport's CURRENT local date. Runs every tick so the flip
+        #     at an airport's local midnight is reflected within one tick.
         new_active: dict[InstrumentId, object] = {}
-        for d_offset in range(self.config.lookahead_days + 1):
-            d = today + timedelta(days=d_offset)
-            try:
-                markets = discover_tradeable_markets(target_date=d, consensus_max=3.0)
-            except FileNotFoundError:
-                continue  # markets.parquet missing — daemon hasn't run yet
-            for m in markets:
-                iid = get_polymarket_instrument_id(m.condition_id, m.no_token_id)
-                # Subscribe if new (Nautilus auto-load fetches + caches the
-                # instrument from Gamma transparently before the WSS sub opens).
-                if iid not in self._state.subscribed:
-                    self.subscribe_order_book_deltas(
-                        iid, book_type=BookType.L2_MBP, depth=BOOK_DEPTH,
-                    )
-                    self._state.subscribed.add(iid)
-                    self._ledger.log(
-                        "subscribed",
-                        instrument_id=str(iid),
-                        city=m.city,
-                        market_date=str(m.market_date),
-                        bucket=m.bucket_title,
-                    )
-                    self.log.info(
-                        f"rollover+  subscribed {m.city} {m.market_date} "
-                        f"({m.bucket_title})  [{iid}]",
-                        color=LogColor.GREEN,
-                    )
-                # Mark today's qualifiers as active; lookahead days are just
-                # subscribed (we warm the book but don't trade them yet).
-                if d == today:
-                    new_active[iid] = m
+        for iid, m in self._state.discovered_markets.items():
+            tz_name = CITY_TO_TZ.get(m.city)
+            if tz_name is None:
+                continue  # unknown city — can't evaluate local date
+            airport_today = datetime.now(ZoneInfo(tz_name)).date()
+            if m.market_date == airport_today:
+                new_active[iid] = m
 
-        # Log active-set diffs
+        # Log diffs only when the set actually changes (it's stable across
+        # most ticks — only moves at local midnight or when discovery runs).
         added = set(new_active) - set(self._state.active)
         removed = set(self._state.active) - set(new_active)
         for iid in added:
@@ -426,9 +462,6 @@ class ConsensusFadeStrategy(Strategy):
             self._ledger.log("active_removed", instrument_id=str(iid))
 
         self._state.active = new_active
-        self._state.active_date = today
-        self._state.active_features_mtime = features_mtime
-        self._state.active_markets_mtime = markets_mtime
 
     def _unsubscribe_expired(self) -> None:
         """Scan subscribed instruments; unsubscribe any past their expiration.
