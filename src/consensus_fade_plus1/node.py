@@ -53,7 +53,8 @@ def _build_node(markets: list[TradeableMarket], *,
                 lookahead_days: int = 1,
                 max_submissions: int | None = None,
                 min_entry_hour_local: int = 16,
-                max_yes_ask: float = 0.22):
+                max_yes_ask: float = 0.22,
+                entry_window_minutes: int = 30):
     """Build a Nautilus TradingNode wired for today's markets.
 
     Lazy-imports heavy Nautilus symbols so module is cheap for CLI help.
@@ -127,6 +128,7 @@ def _build_node(markets: list[TradeableMarket], *,
         max_submissions_this_session=max_submissions,
         min_entry_hour_local=min_entry_hour_local,
         max_yes_ask=max_yes_ask,
+        entry_window_minutes=entry_window_minutes,
     )
     strategy = ConsensusFadeStrategy(config=strategy_config)
 
@@ -143,7 +145,8 @@ def run(*, max_no_price: float = 0.99,
         lookahead_days: int = 1,
         max_submissions: int | None = None,
         min_entry_hour_local: int = 16,
-        max_yes_ask: float = 0.22) -> int:
+        max_yes_ask: float = 0.22,
+        entry_window_minutes: int = 30) -> int:
     """Start the trading node. Runs continuously until Ctrl+C.
 
     Initial instrument set = today's qualifying markets (seed for the
@@ -190,6 +193,8 @@ def run(*, max_no_price: float = 0.99,
     if max_yes_ask < 1.0:
         print(f"[node] market-wisdom cap: yes_ask ≤ {max_yes_ask} "
               f"(no_bid ≥ {1.0 - max_yes_ask:.2f})")
+    print(f"[node] entry window: {entry_window_minutes} minutes from first "
+          f"all-gates-pass per market")
 
     node = _build_node(markets,
                        max_no_price=max_no_price,
@@ -197,7 +202,8 @@ def run(*, max_no_price: float = 0.99,
                        lookahead_days=lookahead_days,
                        max_submissions=max_submissions,
                        min_entry_hour_local=min_entry_hour_local,
-                       max_yes_ask=max_yes_ask)
+                       max_yes_ask=max_yes_ask,
+                       entry_window_minutes=entry_window_minutes)
     try:
         node.run()
     finally:

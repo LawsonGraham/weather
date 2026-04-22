@@ -153,6 +153,20 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # to 0 to disable (UTC behavior falls out from per-market tz lookup).
     min_entry_hour_local: int = 16
 
+    # Bounded-window continuous take. Once a market first passes both the
+    # local-hour gate AND the market-wisdom cap, the strategy keeps
+    # lifting liquidity for this many minutes, then stops submitting
+    # IOCs on that market even if gates are still passing. Prevents
+    # edge degradation from accumulating fills deep into the afternoon
+    # after the initial "post-METAR-absorption" window has passed.
+    # The backtest models a single-shot entry at the first qualifying
+    # hour; a bounded window preserves the extra fills from shallow
+    # initial depth while bounding how far past the signal moment we
+    # keep adding to position. Default 30 min. Set to 1440 (24h) to
+    # effectively disable the window and mimic pre-window continuous
+    # behavior.
+    entry_window_minutes: int = 30
+
 
 # -----------------------------------------------------------------------------
 # State — everything the strategy knows about the world
@@ -191,6 +205,18 @@ class StrategyState:
     # Per-instrument: client_order_id of an IOC currently in flight.
     # Prevents double-submission while one is still resolving.
     pending: dict[InstrumentId, ClientOrderId] = field(default_factory=dict)
+
+    # Per-instrument: timestamp (ns) when this market first passed
+    # both the local-hour gate AND the market-wisdom cap. Used to
+    # bound the entry window (config.entry_window_minutes). Once set,
+    # sticks for the life of the session — a temporary gate failure
+    # does not reset the window.
+    first_eligible_ns: dict[InstrumentId, int] = field(default_factory=dict)
+
+    # Per-instrument: set to True the first time we skip an otherwise-
+    # takeable tick because the entry window has expired. Prevents log
+    # spam — we log the close event once, not every 0.5s afterwards.
+    window_closed: set[InstrumentId] = field(default_factory=set)
 
     # Throttle control for the expired-unsubscribe scan.
     last_expiry_check_ns: int = 0
@@ -554,6 +580,53 @@ class ConsensusFadeStrategy(Strategy):
             no_bid = self._best_no_bid(iid)
             if no_bid is None or no_bid < (1.0 - max_yes):
                 return  # market hasn't converged on "unlikely" yet
+
+        # Entry-window check. Both of the above gates have now passed, so
+        # this market IS currently eligible. Stamp the first-eligible
+        # timestamp if not already set, then bail if we're past the
+        # configured window. Bounded-window continuous take lets us pick
+        # up multiple fills while the signal is fresh, but stops us from
+        # accumulating position deep into the afternoon after edge decay.
+        now_ns = self.clock.timestamp_ns()
+        if iid not in self._state.first_eligible_ns:
+            self._state.first_eligible_ns[iid] = now_ns
+            market = self._state.active.get(iid)
+            city = market.city if market is not None else "?"
+            self.log.info(
+                f"entry window opened  {city}  [{iid}]  "
+                f"window={self.config.entry_window_minutes}m",
+                color=LogColor.BLUE,
+            )
+            if self._ledger is not None:
+                self._ledger.log(
+                    "entry_window_opened",
+                    instrument_id=str(iid),
+                    city=city,
+                    window_minutes=self.config.entry_window_minutes,
+                )
+        window_ns = self.config.entry_window_minutes * 60 * 1_000_000_000
+        elapsed_ns = now_ns - self._state.first_eligible_ns[iid]
+        if window_ns > 0 and elapsed_ns > window_ns:
+            if iid not in self._state.window_closed:
+                self._state.window_closed.add(iid)
+                market = self._state.active.get(iid)
+                city = market.city if market is not None else "?"
+                pos = self._state.positions.get(iid, 0)
+                self.log.info(
+                    f"entry window closed  {city}  [{iid}]  "
+                    f"elapsed={elapsed_ns // 60_000_000_000}m  final pos={pos}",
+                    color=LogColor.YELLOW,
+                )
+                if self._ledger is not None:
+                    self._ledger.log(
+                        "entry_window_closed",
+                        instrument_id=str(iid),
+                        city=city,
+                        elapsed_minutes=int(elapsed_ns // 60_000_000_000),
+                        final_position=pos,
+                    )
+            return
+
         cap = self.config.max_submissions_this_session
         if cap is not None and self._state.submissions_count >= cap:
             # Session-wide submission cap reached — flip circuit so we stop

@@ -11,7 +11,7 @@ coverage, and the book has absorbed midday METAR.
 **Backtest (canonical rule)**: n=72 trades / 27 days (Mar 11 – Apr 10 2026) /
 **100.0% hit** / +$0.039 per trade / IS t=+5.29 / OOS t=+5.85 / 27 of 27 positive days / daily Sharpe 1.31 (annualized 20.85)
 **Venue**: Polymarket
-**Entry**: continuous polling, gated by (per-city local ≥ 16:00) AND (best YES ask ≤ 0.22)
+**Entry**: continuous polling within a 30-min bounded window per market, gated by (per-city local ≥ 16:00) AND (best YES ask ≤ 0.22)
 **Exit**: hold to resolution
 
 ---
@@ -104,21 +104,60 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
 7. `yes_ask[plus1] ≥ 0.005` — excludes tick-floor dust already resolved.
 8. Best NO-ask depth ≥ desired stake (see §6 capacity).
 9. Slippage from best ask to intended stake ≤ 2¢ (protects edge).
+10. **Entry-window still open** — within 30 minutes of the first
+    moment all gates 1-9 passed for this market. After the window
+    closes, further IOCs are blocked (see §4 Execution / Time).
 
-If all 9 pass: **buy NO on the plus1 bucket** whenever the strategy's
+If all 10 pass: **buy NO on the plus1 bucket** whenever the strategy's
 tick-loop sees matchable asks.
 
 ## 4. Execution
 
 ### Time
 
-- **Entry**: continuous polling whenever it is ≥ 16:00 city-local time
-  at the airport, all three forecasts are present with mature HRRR peak
-  coverage, consensus spread ≤ 3°F, and book conditions pass. Once
-  entered, do not re-check — one fill per (city, day).
+- **Entry**: continuous polling within a **bounded 30-minute window**
+  per market. The window OPENS the first moment all gates pass for
+  that market (≥ 16:00 local, consensus ≤ 3°F, yes_ask ≤ 0.22, HRRR
+  peak coverage complete). Within the window, the strategy keeps
+  lifting liquidity via IOCs while gates continue to pass, up to the
+  110-shares-per-market cap. After the window closes, no further IOCs
+  are submitted on that market even if gates are still passing.
 - **Exit**: Hold to market resolution (typically ~05:00 UTC the
   following day, when the resolution source publishes the actual daily
-  max).
+  max). No intraday unwinds.
+
+### Backtest vs live execution — the gap
+
+The backtest models a single-shot entry at the first qualifying hour.
+Live execution (the bounded-window rule above) can accumulate multiple
+fills per market:
+
+- **Best case (YES drifts downward through the afternoon).** Additional
+  fills land at progressively better NO prices. Per-share edge ≥
+  backtest +$0.039.
+- **Worst case (YES trades sideways or drifts upward).** Additional
+  fills land at worse NO prices. Per-share edge < backtest. The
+  30-minute window bounds this degradation — beyond that, the signal
+  is presumed stale.
+- **Market-wisdom cap as built-in protection.** If YES ever climbs
+  above 0.22 during the window, `best_no_bid` drops below 0.78 and
+  the gate closes — we stop adding position. Equivalent to a
+  self-triggered stop-add.
+
+The bounded-window rule is **option 3** of the three discussed:
+- Option 1: unbounded continuous take (legacy v2+cap behavior).
+  Maximum capacity, maximum edge-decay risk.
+- Option 2: single-shot first-fill only. Matches backtest 1:1 but
+  throws away 50-80% of per-market capacity since initial book depth
+  is rarely > ~30 shares within 2¢ of best ask.
+- **Option 3 (current default): 30-min bounded window.** Preserves
+  multi-fill capacity from shallow initial depth, bounds decay
+  exposure, aligns with the "first hour after METAR absorption"
+  mechanism that the backtest identifies as the edge source.
+
+CLI flag: `--entry-window-minutes 30` (default). Set to very large
+(`1440`) for pre-window continuous behavior; set to small values
+(e.g. `5`) for near-single-shot behavior.
 
 ### Why local time, not UTC
 
@@ -462,6 +501,17 @@ loss wipes out 20-25 winning trades**. Sizing must account for this:
 
 ## 10. Changelog
 
+- **2026-04-22 (latest)** — **Bounded 30-min entry window.** Live
+  strategy previously took liquidity continuously through the full
+  afternoon once gates first passed. Now each market has a 30-minute
+  window that opens the first moment all gates pass; further IOCs
+  past that window are blocked. Preserves multi-fill capacity from
+  shallow initial depth while bounding edge decay from late-afternoon
+  fills where YES may have drifted. Also fixed the active-set bug
+  (markets switched in/out based on UTC date instead of per-airport
+  local date) — affected Pacific markets most severely. CLI flag
+  `--entry-window-minutes 30` (default). Backtest is unchanged
+  (still models single-shot at first qualifying hour).
 - **2026-04-22 (later)** — **v2+cap promoted to canonical live rule.**
   After confirming the `yes_ask ≤ 0.22` market-wisdom cap eliminates
   the single known loss while keeping IS/OOS t-stats strong (IS +5.29,

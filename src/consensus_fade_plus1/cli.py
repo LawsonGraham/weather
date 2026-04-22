@@ -73,6 +73,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_submissions=args.max_submissions,
         min_entry_hour_local=args.min_entry_hour_local,
         max_yes_ask=args.max_yes_ask,
+        entry_window_minutes=args.entry_window_minutes,
     )
 
 
@@ -196,6 +197,14 @@ def main(argv: list[str] | None = None) -> int:
                        "(100%% hit in backtest); 0.50 is the looser "
                        "v1-style variant (98.7%% hit, larger per-trade "
                        "edge). Set to 1.0 to disable. Default 0.22.")
+    p.add_argument("--entry-window-minutes", type=int, default=30,
+                  help="Bounded window after a market first becomes "
+                       "eligible (all gates pass). Strategy keeps "
+                       "lifting liquidity within this window, then "
+                       "stops submitting IOCs even if gates are still "
+                       "passing. Prevents edge decay from late fills. "
+                       "Set to 1440 (24h) to effectively disable. "
+                       "Default 30.")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")
