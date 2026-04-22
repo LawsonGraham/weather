@@ -46,6 +46,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from nautilus_trader.common.component import TimeEvent
 from nautilus_trader.common.enums import LogColor
@@ -63,6 +64,7 @@ from nautilus_trader.model.objects import Price, Quantity
 from nautilus_trader.trading.strategy import Strategy
 
 from consensus_fade_plus1.persistence import BookSnapshotWriter, LedgerWriter
+from lib.weather.timezones import CITY_TO_TZ
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURES_PATH = REPO_ROOT / "data" / "processed" / "backtest_v3" / "features.parquet"
@@ -99,11 +101,22 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # automatically as they appear; resolved markets get unsubscribed.
     instrument_ids: list[str]
 
-    # Price ceiling for our IOC BUYs. Fair NO ~ 0.97 (backtest hit rate);
-    # 0.92 implies ~5¢ of edge buffer.
-    max_no_price: float = 0.92
+    # Price ceiling for our IOC BUYs. The v2+cap rule pays NO up to ~0.99
+    # per share because the `max_yes_ask` filter already restricts trades
+    # to high-NO-price regimes where the market agrees the +1 won't
+    # resolve. A tight ceiling here would reject otherwise-valid trades.
+    max_no_price: float = 0.99
 
-    # Per-market position cap in shares. At 0.92 x 110 ≈ $100 risk per market.
+    # Market-wisdom cap: only trade when best_yes_ask <= this (equivalently,
+    # best_no_bid >= 1 - max_yes_ask). At 0.22 this means we require the
+    # market itself to agree the +1 bucket is unlikely before we fade it.
+    # Canonical v2 rule (STRATEGY.md §3 filter #5). Drops backtest hit rate
+    # from 98.7% (cap 0.50) to 100% (cap 0.22) at the cost of ~15% per-trade
+    # edge. Set to 0.50 (or 1.0) to disable the market-wisdom gate and fall
+    # back to the v1-style wider filter.
+    max_yes_ask: float = 0.22
+
+    # Per-market position cap in shares. At 0.99 x 110 ~ $109 risk per market.
     shares_per_market: int = 110
 
     # Minimum shares per IOC. Polymarket's per-market minimum is typically 5-15.
@@ -117,6 +130,25 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # ahead of time means when a market becomes today's tradeable, its book is
     # already warm. Nautilus auto-load handles the fetch transparently.
     lookahead_days: int = 1
+
+    # Hard session-wide cap on IOC submissions. After this many submissions
+    # (regardless of outcome — fill, partial, reject), the strategy flips the
+    # circuit breaker and stops submitting. Default None = unlimited. Useful
+    # for first-live smoke tests where you want exactly N orders on the wire.
+    max_submissions_this_session: int | None = None
+
+    # Minimum city-LOCAL hour (0-23) before the strategy may fire on a
+    # given instrument. The gate is evaluated per-market against the
+    # airport's local timezone (America/New_York for ATL/NYC/MIA, etc.).
+    # Earlier local hours produce materially worse OOS — the 16-local
+    # floor captures both HRRR full-peak-window coverage (fxx=6 from
+    # inits 10-16 local) and intraday METAR absorption into the book
+    # (winner / loser YES prices diverge around local 13-15). Backtest:
+    # 13 local t=+1.06, 15 local t=+2.51, 16 local t=+3.67 (with cap 0.50)
+    # or t=+7.70 (with canonical cap 0.22). See
+    # notebooks/experiments/backtest-v3/consensus_optimal_sweep.py. Set
+    # to 0 to disable (UTC behavior falls out from per-market tz lookup).
+    min_entry_hour_local: int = 16
 
 
 # -----------------------------------------------------------------------------
@@ -166,6 +198,10 @@ class StrategyState:
     running: bool = False
     tick_count: int = 0
 
+    # Total IOC submissions attempted this session. Used to honor
+    # config.max_submissions_this_session for capped smoke tests.
+    submissions_count: int = 0
+
 
 # -----------------------------------------------------------------------------
 # Strategy
@@ -194,6 +230,20 @@ class ConsensusFadeStrategy(Strategy):
             min_order_shares=self.config.min_order_shares,
             tick_interval_seconds=self.config.tick_interval_seconds,
             lookahead_days=self.config.lookahead_days,
+            min_entry_hour_local=self.config.min_entry_hour_local,
+            max_yes_ask=self.config.max_yes_ask,
+        )
+        if self.config.min_entry_hour_local > 0:
+            self.log.info(
+                f"entry gate: per-city local ≥ {self.config.min_entry_hour_local:02d}:00. "
+                f"Each instrument's gate uses its airport tz "
+                f"(CITY_TO_TZ) — submissions blocked until local clock ≥ floor.",
+                color=LogColor.YELLOW,
+            )
+        self.log.info(
+            f"market-wisdom cap: yes_ask ≤ {self.config.max_yes_ask} "
+            f"(equivalently best_no_bid ≥ {1.0 - self.config.max_yes_ask:.2f})",
+            color=LogColor.YELLOW,
         )
         self.log.info(
             f"ledger     → {self._ledger.dir_path}/YYYY-MM-DD.jsonl",
@@ -433,10 +483,59 @@ class ConsensusFadeStrategy(Strategy):
 
     # --- Action: submit an IOC when opportunity + room exist --------------
 
+    def _best_no_bid(self, iid: InstrumentId) -> float | None:
+        """Best NO bid = highest price buyers are paying for NO. If none,
+        returns None. Equivalent to (1 - best_yes_ask) up to spread/fees."""
+        book = self.cache.order_book(iid)
+        if book is None:
+            return None
+        for lvl in book.bids():
+            return float(lvl.price)  # first level is best
+        return None
+
+    def _local_hour_for(self, iid: InstrumentId) -> int | None:
+        """City-local hour for this instrument's airport. None if city unknown."""
+        market = self._state.active.get(iid)
+        if market is None:
+            return None
+        tz_name = CITY_TO_TZ.get(market.city)
+        if tz_name is None:
+            return None
+        return datetime.now(ZoneInfo(tz_name)).hour
+
     def _maybe_take(self, iid: InstrumentId) -> None:
         """If there's takeable liquidity and room under the cap, submit IOC BUY."""
         if self._state.circuit_broken:
             return  # global circuit breaker tripped
+        # Per-instrument local-hour gate (STRATEGY.md §3 filter #5).
+        min_hour = self.config.min_entry_hour_local
+        if min_hour > 0:
+            local_hour = self._local_hour_for(iid)
+            if local_hour is None or local_hour < min_hour:
+                return  # too early in this city's local day
+        # Market-wisdom cap (STRATEGY.md §3 filter #5): require the current
+        # book itself to agree the +1 bucket is unlikely before we fade it.
+        # Evaluated as best NO bid >= 1 - max_yes_ask (since YES_ask + NO_bid <= 1).
+        max_yes = self.config.max_yes_ask
+        if max_yes < 1.0:
+            no_bid = self._best_no_bid(iid)
+            if no_bid is None or no_bid < (1.0 - max_yes):
+                return  # market hasn't converged on "unlikely" yet
+        cap = self.config.max_submissions_this_session
+        if cap is not None and self._state.submissions_count >= cap:
+            # Session-wide submission cap reached — flip circuit so we stop
+            # even if another instrument would have been takeable this tick.
+            if not self._state.circuit_broken:
+                self._state.circuit_broken = True
+                self.log.info(
+                    f"session submission cap reached "
+                    f"({self._state.submissions_count}/{cap}) — stopping"
+                )
+                if self._ledger is not None:
+                    self._ledger.log("session_cap_hit",
+                                     submissions=self._state.submissions_count,
+                                     cap=cap)
+            return
         if iid in self._state.pending:
             return  # an IOC is still resolving on this market
         # Per-instrument cooldown after a rejection
@@ -474,6 +573,7 @@ class ConsensusFadeStrategy(Strategy):
         # Track before submit so the next tick won't race another IOC on the
         # same instrument. Cleared when we see the order go terminal.
         self._state.pending[iid] = order.client_order_id
+        self._state.submissions_count += 1
         self.submit_order(order)
         self.log.info(
             f"TAKE  {iid}  BUY {qty} @ {price} IOC",

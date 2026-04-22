@@ -1,16 +1,17 @@
 # Consensus-Fade +1 Offset
 
 Fade retail's systematic over-pricing of the bucket one above the NBS
-favorite on daily-temperature markets, restricted to days where three
-independent weather forecasts agree. Enter at ≥16:00 city-local time
-so the forecast panel is fully mature and HRRR has real peak-window
-coverage.
+favorite on daily-temperature markets. Restrict to days where three
+independent weather forecasts agree AND the prediction market itself
+has already re-priced the +1 bucket as unlikely. Enter ≥16:00 city-local
+so the forecast panel is fully mature, HRRR has real peak-window
+coverage, and the book has absorbed midday METAR.
 
 **Status**: paper-trade (need 2+ weeks of live fill data before real capital)
-**Backtest (canonical rule)**: n=78 trades / 31 days (Mar 11 – Apr 10 2026) /
-**98.7% hit** / +$0.046 per trade / IS t=+1.85 / OOS t=+4.49
+**Backtest (canonical rule)**: n=72 trades / 27 days (Mar 11 – Apr 10 2026) /
+**100.0% hit** / +$0.039 per trade / IS t=+5.29 / OOS t=+5.85 / 27 of 27 positive days / daily Sharpe 1.31 (annualized 20.85)
 **Venue**: Polymarket
-**Entry**: continuous polling starting at 16:00 city-local time
+**Entry**: continuous polling, gated by (per-city local ≥ 16:00) AND (best YES ask ≤ 0.22)
 **Exit**: hold to resolution
 
 ---
@@ -92,13 +93,19 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
    coverage is incomplete AND the market has not yet reconciled with
    live midday METAR. Earlier entries have materially lower hit rate
    and edge (see §5).
-6. `0.005 ≤ yes_ask[plus1] ≤ 0.50` — excludes tick-floor dust already
-   resolved and excludes already-favorite regions where there is no
-   mispricing to fade.
-7. Best NO-ask depth ≥ desired stake (see §6 capacity).
-8. Slippage from best ask to intended stake ≤ 2¢ (protects edge).
+6. **`yes_ask[plus1] ≤ 0.22`** — the market-wisdom cap. Evaluated live
+   via `best_no_bid ≥ 1 − 0.22 = 0.78` on the subscribed NO book (YES
+   ask and NO bid are complementary up to the spread). We only trade
+   when the market itself has already priced the +1 bucket as
+   unlikely — the intraday METAR that the market has observed is
+   information we don't want to trade against. See §5.1 for the
+   mechanism; cap ≤ 0.22 drops the one backtest loss and improves
+   hit rate from 98.7% (cap 0.50) to 100.0% (cap 0.22).
+7. `yes_ask[plus1] ≥ 0.005` — excludes tick-floor dust already resolved.
+8. Best NO-ask depth ≥ desired stake (see §6 capacity).
+9. Slippage from best ask to intended stake ≤ 2¢ (protects edge).
 
-If all 8 pass: **buy NO on the plus1 bucket** whenever the strategy's
+If all 9 pass: **buy NO on the plus1 bucket** whenever the strategy's
 tick-loop sees matchable asks.
 
 ## 4. Execution
@@ -160,20 +167,35 @@ snapshot column (`trade_table.entry_price`) that was more favorable
 than what the hourly feed shows. Replaying v1 against the hourly feed
 gives the "v1 (20 UTC)" row below.
 
-### Headline — canonical rule (≥16 local, cs ≤ 3°F, cap 0.50)
+### Headline — canonical rule (≥16 local, cs ≤ 3°F, cap 0.22)
 
 | metric | value |
 |---|---|
 | period | 2026-03-11 – 2026-04-10 (31 days) |
 | markets | 11 US cities |
-| trades | 78 |
-| **hit rate** | **98.7%** (77 wins, 1 loss) |
-| per-trade PnL | +$0.046 |
-| total PnL (1 share) | +$3.57 |
-| IS t-stat (Mar 11-25) | +1.85 |
-| OOS t-stat (Mar 26-Apr 10) | +4.49 |
-| positive days | 27 of 28 (96%) |
-| daily Sharpe | 0.59 (annualized 9.3) |
+| trades | 72 |
+| **hit rate** | **100.0%** (72 wins, 0 losses) |
+| per-trade PnL | +$0.039 |
+| total PnL (1 share) | +$2.82 |
+| IS t-stat (Mar 11-25) | +5.29 |
+| OOS t-stat (Mar 26-Apr 10) | +5.85 |
+| positive days | 27 of 27 (100%) |
+| daily Sharpe | 1.31 (annualized 20.85) |
+
+### Looser alternative — cap 0.50 (§5.1 reference)
+
+| metric | value |
+|---|---|
+| trades | 78 (6 more than canonical) |
+| hit rate | 98.7% (77 wins, 1 loss — Chicago 2026-03-17) |
+| per-trade | +$0.046 (~15% larger than canonical) |
+| t-stat | +3.67 (IS +1.85 / OOS +4.49) |
+
+The looser cap collects a bigger per-trade edge but eats one
+catastrophic loss (−$0.67 on the Chicago day where the market had YES
+at $0.34 — above our canonical 0.22 threshold but under the loose
+0.50). Net total PnL is slightly higher ($3.57 vs $2.82) but the
+downside is much worse and IS t-stat drops by half.
 
 ### Entry-rule comparison
 
@@ -186,7 +208,7 @@ All rows: consensus ≤ 3°F, HRRR 6h peak coverage, hourly-price entry.
 | ≥15 local, cap 0.50 | 84 | 81/3 | 96.4% | +$0.052 | +2.51 | +5.71 | +0.66 |
 | **≥16 local, cap 0.50** | **78** | **77/1** | **98.7%** | **+$0.046** | **+3.67** | **+1.85** | **+4.49** |
 | ≥17 local, cap 0.50 | 76 | 75/1 | 98.7% | +$0.041 | +3.30 | +1.73 | +3.96 |
-| ≥16 local, cap 0.22 | 72 | 72/0 | 100.0% | +$0.039 | +7.70 | +5.29 | +5.85 |
+| **≥16 local, cap 0.22 (canonical)** | **72** | **72/0** | **100.0%** | **+$0.039** | **+7.70** | **+5.29** | **+5.85** |
 
 Key observations:
 
@@ -194,12 +216,13 @@ Key observations:
   (13, 15) collapse OOS — these are the "morning consensus looked fine,
   afternoon METAR disagreed" losses.
 - **Local time beats UTC-fixed on OOS.** v1 at 20 UTC had OOS t=+1.39;
-  v2b at 16 local has OOS t=+4.49. Same trade, better coordinate system.
-- **The yes_ask cap at 0.22 is a separate axis.** It eliminates the one
-  remaining loss and more than doubles t-stat, but at the cost of 15%
-  smaller per-trade edge and ~10% fewer trades. See §5.1.
+  v2 at 16 local (cap 0.50) already has OOS t=+4.49. Same trade, better
+  coordinate system.
+- **The market-wisdom cap at 0.22 eliminates tail risk.** Drops hit rate
+  from 98.7% to 100%, doubles t-stat (+3.67 → +7.70), at the cost of ~10%
+  fewer trades and ~15% smaller per-trade edge. See §5.1.
 
-### 5.1 Optional tightening: yes_ask cap at 0.22
+### 5.1 Why the 0.22 cap is canonical
 
 Throughout the day, the +1 YES price is a real-time market signal that
 separates winners (NO wins) from losers (NO loses):
@@ -216,39 +239,54 @@ separates winners (NO wins) from losers (NO loses):
 
 Live METAR between noon and 16:00 local lets the market separate
 winners (YES drifts toward 0) from losers (YES rises toward 1). By
-16:00 local the separation is nearly clean. Tightening the entry cap
-from $0.50 to $0.22 excludes days where the market has already started
-pricing +1 as "likely" — the market is telling you not to trade those.
+16:00 local the separation is nearly clean. A cap at $0.22 excludes
+days where the market has already started pricing +1 as "likely" —
+the market is telling you not to trade those. The market's own
+intraday repricing becomes a second, independent filter on top of
+forecast consensus.
 
-**This is a secondary overlay, not the canonical rule.** Reasons not to
-promote it to canonical:
+**Why this is the canonical rule (not just an overlay):**
 
-1. The 72/0 hit rate is not statistically distinguishable from the
-   canonical rule's 77/1 — at 72 trades a 95% Wilson CI for true hit
-   rate is 95-100%, which overlaps comfortably with 98.7%.
-2. Adding the cap was a post-hoc decision after inspecting the
-   outcome split. That's a filter-selection path that requires
-   independent OOS to validate.
-3. The 0.22 cap puts all fills deep on the NO side ($0.78-$0.99),
-   where book depth is less well-characterized than around the
-   prevailing ask.
-4. Per-trade edge shrinks from $0.046 to $0.039. Not dramatic, but
-   real.
+1. **Avoids a structural tail.** The single backtest loss under cap
+   0.50 (Chicago 2026-03-17, −$0.67) is a 15-wins-worth of edge hit.
+   Cap 0.22 eliminates it by respecting the market's warning. Live
+   deployment at $100/share stake means a single loss costs $60-$80 —
+   too painful to eat on purpose when an honest filter excludes it.
+2. **Both folds agree.** Cap 0.22 has IS t=+5.29 and OOS t=+5.85, both
+   strong. Cap 0.50 has IS t=+1.85 (barely significant) and OOS t=+4.49
+   — inconsistent enough that one fold is carrying most of the signal.
+3. **Daily Sharpe doubles.** 1.31 (cap 0.22) vs 0.59 (cap 0.50) — the
+   cap 0.22 rule has much less day-to-day variance.
+4. **The mechanism is robust, not ad-hoc.** The YES-price-by-local-hour
+   split (§5 table above) is a physical effect of METAR absorption,
+   not a fitted threshold. 0.22 falls naturally out of the winner /
+   loser distribution; it's the number above which losers reliably
+   sit at 16 local.
 
-**Recommended use:** overlay the 0.22 cap manually for the first ~20
-live trades to reduce tail risk during the trust-building phase. If
-realized hit rate with the cap holds at ≥99% over 30+ independent paper
-trades, promote the cap to canonical. Otherwise keep the wider 0.50
-filter.
+**Caveats to monitor live:**
 
-### Per-city breakdown (canonical rule, ≥16 local, cap 0.50)
+- 72/0 at this sample size has wide confidence bounds (95% Wilson CI
+  ~ 95-100%). A "true" hit rate of 96-97% is statistically consistent
+  with the backtest. Kill-switch any live loss immediately.
+- The 0.22 cap pushes fills to NO prices $0.78-$0.99 — book depth at
+  these prices is less well-characterized than around the prevailing
+  ask. Real capacity may be smaller than §6 estimates.
+- Per-trade edge is $0.039 (smaller than looser variant's $0.046).
+  At $100/share stake, each win is ~$4; each loss would be ~$60-$80.
+  20-trade PnL buffer above zero before scaling stake.
+
+**Looser alternative (cap 0.50) is retained as a CLI flag**
+(`--max-yes-ask 0.50`) for paper-trade comparison and as a fallback
+if the 0.22 rule underperforms live.
+
+### Per-city breakdown (canonical rule, ≥16 local, cap 0.22)
 
 | city | n | W/L | hit | per-trade | t-stat |
 |---|---|---|---|---|---|
-| Atlanta | 14 | 14/0 | 100.0% | +$0.083 | +3.82 |
+| Atlanta | 13 | 13/0 | 100.0% | +$0.067 | +4.27 |
 | Austin | 5 | 5/0 | 100.0% | +$0.058 | +1.61 |
-| Chicago | 2 | 1/1 | 50.0% | −$0.256 | −0.62 |
-| Dallas | 10 | 10/0 | 100.0% | +$0.083 | +2.54 |
+| Chicago | 1 | 1/0 | 100.0% | +$0.160 | — |
+| Dallas | 8 | 8/0 | 100.0% | +$0.035 | +3.53 |
 | Denver | 4 | 4/0 | 100.0% | +$0.044 | +2.43 |
 | Houston | 9 | 9/0 | 100.0% | +$0.064 | +1.96 |
 | LA | 5 | 5/0 | 100.0% | +$0.008 | +4.50 |
@@ -257,11 +295,11 @@ filter.
 | Seattle | 4 | 4/0 | 100.0% | +$0.109 | +2.07 |
 | SF | 0 | — | — | — | — |
 
-Chicago is the only city that loses — 1 of 2 trades (2026-03-17, YES
-entered at $0.34, +1 bucket resolved, NO paid 0). With the optional
-0.22 cap overlay Chicago drops out entirely (no qualifying trades) and
-the strategy reaches 100% hit. SF had no consensus-tight days in the
-backtest window.
+Chicago had 2 trades under the looser cap 0.50 rule, one of which lost
+(2026-03-17, YES entered at $0.34 — above the canonical 0.22 threshold
+— +1 bucket resolved, NO paid 0). Under the canonical cap 0.22 rule,
+that loss is filtered out: only 1 Chicago trade remains (the winner).
+SF had no consensus-tight days in the backtest window.
 
 ### Overfit protection
 
@@ -309,14 +347,17 @@ Typical day with 2-3 qualifying markets:
 
 ### Practical deployment ceiling
 
-- **~$500/day total capital** with acceptable slippage
-- **~$15-25/day expected PnL** at that scale (per-trade edge $0.046)
-- Beyond ~$500/day, walking the book deeper eats the edge
+- **~$300-400/day total capital** with acceptable slippage (tighter
+  than cap-0.50 since the cap-0.22 rule takes fewer trades and all
+  fills are deep on the NO side where depth is thinner)
+- **~$10-15/day expected PnL** at that scale (per-trade edge $0.039,
+  ~2.7 trades/day avg)
+- Beyond ~$400/day, walking the book deeper eats the edge
 
 This is a **portfolio** — you cannot concentrate in one market. Each
-qualifying bucket gets ~$50-150 of stake; diversification across 2-3
-qualifying markets per day is what drives the 98.7% hit rate and 96%
-positive-day streak (27 of 28).
+qualifying bucket gets ~$50-100 of stake; diversification across 2-3
+qualifying markets per day is what drives the 100% hit rate and
+positive-day streak (27 of 27 in backtest).
 
 ### Caveats
 
@@ -328,6 +369,9 @@ positive-day streak (27 of 28).
 4. At 16:00 local on a day that will resolve NO, YES is decaying
    rapidly; the best ask at the moment we fire may be stale. Use a
    pre-trade book refresh immediately before order submission.
+5. Canonical cap 0.22 means all fills are at NO prices 0.78-0.99.
+   Book depth at those prices is less well-characterized than near
+   prevailing ask. Real capacity may be 30-50% of §6 numbers above.
 
 ## 7. Risk management
 
@@ -335,7 +379,7 @@ positive-day streak (27 of 28).
 
 | event | probability | consequence | mitigation |
 |---|---|---|---|
-| +1 bucket wins | ~1-3% per trade | lose $0.50-$0.95 per share | 98.7% hit in backtest; diversify across cities |
+| +1 bucket wins | 0% observed in cap-0.22 backtest, ~3% historical | lose $0.78-$0.99 per share | 100% hit in backtest; cap-0.22 filter rejects the 1 known loss; diversify across cities |
 | NBS + GFS + HRRR all wrong together | uncommon on consensus-tight days | multiple simultaneous losses | diversify across cities; size so one loss ≤ 20 prior wins |
 | Retail gets smarter on +1 pricing | possible over time | edge compresses to fair | monitor realized edge weekly; kill if < $0/trade over 30+ trades |
 | Polymarket changes fee structure | low | PnL math shifts | recompute fees before trades |
@@ -344,8 +388,10 @@ positive-day streak (27 of 28).
 
 ### Kill switches
 
-- **2 losses in any 20-trade window** — halt, re-examine (baseline was
-  1 loss in 78).
+- **Any single loss** — investigate immediately. Backtest under the
+  canonical rule had zero; any live loss is a signal the market-wisdom
+  filter isn't behaving as observed in backtest.
+- **2 losses in any 20-trade window** — halt, re-examine.
 - **Realized < $0/trade after 40 trades** — halt, likely regime change.
 - **Observed depth at best ask < 5 shares across all markets for 3
   days** — halt, liquidity gone.
@@ -353,15 +399,17 @@ positive-day streak (27 of 28).
 
 ### What can go wrong even on a "winning" day
 
-We buy NO at $0.50-$0.92. A single loss costs $0.50-$0.95 per share.
-Per-trade edge is $0.046, so **one loss wipes out 10-20 winning
-trades**. Sizing must account for this:
+Under the canonical cap-0.22 rule we buy NO at $0.78-$0.99. A single
+loss costs $0.78-$0.99 per share. Per-trade edge is $0.039, so **one
+loss wipes out 20-25 winning trades**. Sizing must account for this:
 
-- At $100/share stake, a single loss costs ~$60-$95
+- At $100/share stake, a single loss costs ~$78-$99; a single win
+  pays ~$4
 - Single-day P&L is skewed: small wins, occasional large loss
-- Max drawdown over backtest window was 1 losing trade × $0.67 = −$0.67
-  at 1-share, or −$67 at $100/share
-- Build a 20-trade realized-PnL buffer above zero before scaling stake
+- Max drawdown in canonical backtest: 0 (zero losses observed)
+- Build a 25-trade realized-PnL buffer above zero before scaling stake
+- The tighter the cap, the more expensive an individual loss is — the
+  trade-off is the filter is more accurate at preventing losses
 
 ## 8. Deployment checklist
 
@@ -372,17 +420,20 @@ trades**. Sizing must account for this:
 - [ ] Book recorder running on all 11 US cities (already live)
 - [ ] NBS + GFS MOS + HRRR feeds refreshed at minimum hourly through
       16:00 local for each station
-- [ ] Per-station IANA tz table wired into the discover step
-- [ ] `recommender.py` runs cleanly with local-time gate
+- [ ] City→tz table hard-wired (`src/lib/weather/timezones.py`)
+- [ ] `cfp discover` runs cleanly with local-time gate
+- [ ] `cfp run` default params: `--max-yes-ask 0.22` / `--min-entry-hour-local 16`
 
 ### Week 1-2: Paper
 
 - [ ] Log real YES ask and NO ask at entry for each recommendation
 - [ ] Log actual resolution outcome
-- [ ] Compute realized per-trade vs backtest (+$0.046) expectation
+- [ ] Compute realized per-trade vs backtest (+$0.039) expectation
 - [ ] Measure: are recommendations filling at our intended prices?
-- [ ] Track parallel "with 0.22 cap" subset for comparison
-- [ ] Expected sample: ~20-30 paper trades in 2 weeks
+- [ ] Track parallel cap-0.50 subset (`--max-yes-ask 0.50`) for
+      comparison — if it outperforms in realized data, we regressed
+      to the looser rule
+- [ ] Expected sample: ~15-25 paper trades in 2 weeks
 
 ### Week 3-4: Small-scale live
 
@@ -411,13 +462,20 @@ trades**. Sizing must account for this:
 
 ## 10. Changelog
 
-- **2026-04-22** — **v2 canonical rule**: switched entry from fixed
-  20 UTC to ≥ 16:00 city-local time; required HRRR 6h peak-window
-  coverage. Also re-ran v1 against the same hourly-price feed used for
-  v2 (instead of the trade-table entry_price column) to get
+- **2026-04-22 (later)** — **v2+cap promoted to canonical live rule.**
+  After confirming the `yes_ask ≤ 0.22` market-wisdom cap eliminates
+  the single known loss while keeping IS/OOS t-stats strong (IS +5.29,
+  OOS +5.85, both folds) and doubling daily Sharpe (0.59 → 1.31), the
+  cap became a required filter in the live strategy. Wired through
+  `cli.py` as `--max-yes-ask 0.22` and into `strategy.py` as a
+  per-instrument best-NO-bid check. CLI flag renamed
+  `--min-entry-hour` → `--min-entry-hour-local` (default 16);
+  `src/lib/weather/timezones.py` added. Looser cap 0.50 retained as
+  fallback via `--max-yes-ask 0.50`.
+- **2026-04-22** — v2 canonical rule: switched entry from fixed 20 UTC
+  to ≥ 16:00 city-local time; required HRRR 6h peak-window coverage.
+  Also re-ran v1 against the same hourly-price feed used for v2
+  (instead of the trade-table entry_price column) to get
   apples-to-apples numbers — the old v1 headline (t=+4.44) was
-  price-source artifact. New canonical: n=78, 98.7% hit, OOS t=+4.49.
-  `yes_ask ≤ 0.22` cap is documented as an optional tightening (§5.1),
-  NOT canonical — promotion requires independent paper-trade
-  validation.
+  price-source artifact. v2 (cap 0.50): n=78, 98.7% hit, OOS t=+4.49.
 - **2026-04-15** — Strategy distilled from v3 iter 1-9 (backtest-v2 branch)

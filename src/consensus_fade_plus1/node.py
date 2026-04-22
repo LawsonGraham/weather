@@ -49,7 +49,10 @@ def _ensure_env() -> None:
 def _build_node(markets: list[TradeableMarket], *,
                 max_no_price: float,
                 shares_per_market: int,
-                lookahead_days: int = 1):
+                lookahead_days: int = 1,
+                max_submissions: int | None = None,
+                min_entry_hour_local: int = 16,
+                max_yes_ask: float = 0.22):
     """Build a Nautilus TradingNode wired for today's markets.
 
     Lazy-imports heavy Nautilus symbols so module is cheap for CLI help.
@@ -89,6 +92,14 @@ def _build_node(markets: list[TradeableMarket], *,
             open_check_interval_secs=10.0,
             open_check_open_only=True,
             graceful_shutdown_on_exception=True,
+            # Polymarket's matcher fills whole maker blocks rather than
+            # splitting them, so an IOC for qty=5 can match against a 5.9756
+            # block and we end up with 0.9756 more shares than requested.
+            # Without this flag Nautilus's ExecEngine rejects the excess in
+            # internal bookkeeping — but it cannot reverse the on-chain
+            # trade, so state.positions diverges from wallet reality. Accept
+            # the overfill so the fill event propagates to the strategy.
+            allow_overfills=True,
         ),
         data_clients={
             POLYMARKET: PolymarketDataClientConfig(
@@ -112,6 +123,9 @@ def _build_node(markets: list[TradeableMarket], *,
         max_no_price=max_no_price,
         shares_per_market=shares_per_market,
         lookahead_days=lookahead_days,
+        max_submissions_this_session=max_submissions,
+        min_entry_hour_local=min_entry_hour_local,
+        max_yes_ask=max_yes_ask,
     )
     strategy = ConsensusFadeStrategy(config=strategy_config)
 
@@ -123,9 +137,12 @@ def _build_node(markets: list[TradeableMarket], *,
     return node
 
 
-def run(*, max_no_price: float = 0.92,
+def run(*, max_no_price: float = 0.99,
         shares_per_market: int = 110,
-        lookahead_days: int = 1) -> int:
+        lookahead_days: int = 1,
+        max_submissions: int | None = None,
+        min_entry_hour_local: int = 16,
+        max_yes_ask: float = 0.22) -> int:
     """Start the trading node. Runs continuously until Ctrl+C.
 
     Initial instrument set = today's qualifying markets (seed for the
@@ -146,10 +163,23 @@ def run(*, max_no_price: float = 0.92,
               f"max_no_price={max_no_price}, {shares_per_market} shares/market. "
               f"Rollover handles new/resolved markets automatically.")
 
+    if max_submissions is not None:
+        print(f"[node] session-wide submission cap: {max_submissions}. "
+              f"Strategy will stop after that many IOCs (any outcome).")
+    if min_entry_hour_local > 0:
+        print(f"[node] entry gate: per-city local clock ≥ "
+              f"{min_entry_hour_local:02d}:00. Each airport's own tz.")
+    if max_yes_ask < 1.0:
+        print(f"[node] market-wisdom cap: yes_ask ≤ {max_yes_ask} "
+              f"(no_bid ≥ {1.0 - max_yes_ask:.2f})")
+
     node = _build_node(markets,
                        max_no_price=max_no_price,
                        shares_per_market=shares_per_market,
-                       lookahead_days=lookahead_days)
+                       lookahead_days=lookahead_days,
+                       max_submissions=max_submissions,
+                       min_entry_hour_local=min_entry_hour_local,
+                       max_yes_ask=max_yes_ask)
     try:
         node.run()
     finally:

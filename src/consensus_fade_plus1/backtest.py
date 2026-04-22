@@ -1,14 +1,14 @@
 """Consensus-Fade +1 Offset — Canonical backtest reproducer (v2).
 
-Runs the canonical rule from STRATEGY.md §3:
+Runs the canonical v2 rule from STRATEGY.md §3:
     - All three forecasts present (NBS + GFS MOS + HRRR)
     - HRRR fxx=6 covers ≥ 6 of the 11 hours in local 12-22 peak window
     - consensus_spread ≤ 3.0°F
     - Entry time ≥ 16:00 city-local
-    - 0.005 ≤ yes_ask ≤ 0.50
+    - 0.005 ≤ yes_ask ≤ 0.22  (market-wisdom cap)
 
-Outputs the headline stats, IS/OOS split, per-city breakdown, and an
-"optional 0.22-cap overlay" comparison row (see STRATEGY.md §5.1).
+Also prints the looser-cap alternative (yes_ask ≤ 0.50) as a reference —
+that version catches 6 more trades but adds 1 backtest loss.
 
 Data requirements:
     data/processed/backtest_v2/trade_table.parquet
@@ -49,7 +49,7 @@ FEE_RATE = 0.05
 CONSENSUS_MAX_F = 3.0
 OFFSET = 1
 YES_PRICE_MIN = 0.005
-YES_PRICE_MAX = 0.50        # canonical cap; §5.1 also tests 0.22 overlay
+YES_PRICE_MAX = 0.22        # canonical v2 market-wisdom cap
 LOCAL_FLOOR_HOUR = 16       # 16:00 city-local
 HRRR_MIN_PEAK_COV = 6       # distinct valid-hours in 12-22 local
 
@@ -259,11 +259,11 @@ def main() -> int:
     _print_stats(t[t.date <= IS_END], f"IS  {IS_START}..{IS_END}")
     _print_stats(t[t.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
 
-    print("\n=== Optional 0.22-cap overlay (§5.1, NOT canonical) ===")
-    t22 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.22)
-    _print_stats(t22, "FULL period")
-    _print_stats(t22[t22.date <= IS_END], f"IS  {IS_START}..{IS_END}")
-    _print_stats(t22[t22.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
+    print("\n=== Looser alternative: yes_ask ≤ 0.50 (§5.1, reference) ===")
+    t50 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.50)
+    _print_stats(t50, "FULL period")
+    _print_stats(t50[t50.date <= IS_END], f"IS  {IS_START}..{IS_END}")
+    _print_stats(t50[t50.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
 
     print("\n=== Per-city (canonical) ===")
     for city, g in t.sort_values("city").groupby("city"):

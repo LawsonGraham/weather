@@ -65,8 +65,11 @@ def discover_tradeable_markets(
     """Return the list of +1 offset markets eligible to trade today.
 
     Filters:
-      1. Forecasts available (NBS + GFS required; HRRR optional)
-      2. consensus_spread ≤ consensus_max
+      1. All three forecasts present (NBS + GFS + HRRR) — HRRR also serves
+         as a freshness check: when HRRR is partial-day (pre-peak cycles
+         only), its daily max falls far below NBS/GFS and the consensus
+         spread fails.
+      2. consensus_spread ≤ consensus_max across all three models
       3. +1 offset bucket exists for this city on this market_date
     """
     if target_date is None:
@@ -79,14 +82,17 @@ def discover_tradeable_markets(
         )
 
     forecasts = get_all_cities(target_date)
-    # Filter cities with complete NBS+GFS
+    # Filter cities with complete NBS + GFS + HRRR
     forecasts = [f for f in forecasts
-                 if f.nbs_pred_max_f is not None and f.gfs_pred_max_f is not None]
+                 if f.nbs_pred_max_f is not None
+                 and f.gfs_pred_max_f is not None
+                 and f.hrrr_pred_max_f is not None]
 
-    # Filter by consensus
+    # Filter by consensus — require_all_three is implicit given the above,
+    # kept explicit here for clarity and as a belt-and-suspenders guard.
     tight = []
     for f in forecasts:
-        cs = consensus_spread(f, require_all_three=False)
+        cs = consensus_spread(f, require_all_three=True)
         if cs is None or cs > consensus_max:
             continue
         tight.append((f, cs))

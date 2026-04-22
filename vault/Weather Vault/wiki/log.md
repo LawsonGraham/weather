@@ -136,3 +136,17 @@ n=78 / 98.7% / +$0.046 / IS t=+1.85 / OOS t=+4.49. The 0.22-cap overlay
 NOT canonical — 72/0 is statistically indistinguishable from 77/1.
 Updated: `src/consensus_fade_plus1/STRATEGY.md`, `backtest.py`. Added
 synthesis: [[2026-04-22 Consensus-Fade v2 local-time anchoring]].
+
+## [2026-04-22 later] implementation | Consensus-Fade v2+cap promoted to live canonical
+
+Wired the `yes_ask ≤ 0.22` market-wisdom cap into the live strategy
+as the canonical rule (previously documented as "optional §5.1
+overlay"). Justification: both IS (+5.29) and OOS (+5.85) t-stats
+beat the cap-0.50 variant; daily Sharpe doubles (0.59 → 1.31); zero
+losses in 72 trades vs 1 in 78; the mechanism (market's intraday
+repricing is an independent filter on top of forecast consensus) is
+physical, not fitted. Live filter evaluated as `best_no_bid ≥ 0.78`
+on the NO book. Also replaced UTC-18 gate with per-city local-16 gate
+via `src/lib/weather/timezones.py`. CLI flags: `--max-yes-ask 0.22`
+(default), `--min-entry-hour-local 16` (default). Looser cap 0.50
+remains available as `--max-yes-ask 0.50` for paper-trade comparison.

@@ -70,6 +70,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_no_price=args.max_no_price,
         shares_per_market=args.shares_per_market,
         lookahead_days=args.lookahead_days,
+        max_submissions=args.max_submissions,
+        min_entry_hour_local=args.min_entry_hour_local,
+        max_yes_ask=args.max_yes_ask,
     )
 
 
@@ -170,10 +173,29 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_discover)
 
     p = sub.add_parser("run", help="Start the live trading node")
-    p.add_argument("--max-no-price", type=float, default=0.92)
+    p.add_argument("--max-no-price", type=float, default=0.99,
+                  help="Hard ceiling on NO buy price. Default 0.99 lets "
+                       "the market-wisdom cap do the real filtering.")
     p.add_argument("--shares-per-market", type=int, default=110)
     p.add_argument("--lookahead-days", type=int, default=1,
                   help="Subscribe to today + N days ahead (default 1)")
+    p.add_argument("--max-submissions", type=int, default=None,
+                  help="Hard cap on IOC submissions this session — strategy "
+                       "flips the circuit breaker after N submissions "
+                       "regardless of outcome. Default: unlimited.")
+    p.add_argument("--min-entry-hour-local", type=int, default=16,
+                  help="Minimum city-LOCAL hour (0-23) before each market "
+                       "may fire. Evaluated per-instrument against the "
+                       "airport's tz. Earlier floors collapse OOS (13 local "
+                       "t=+1.06, 16 local t=+3.67/+7.70). Default 16. "
+                       "Set to 0 to disable.")
+    p.add_argument("--max-yes-ask", type=float, default=0.22,
+                  help="Market-wisdom cap. Only trade when the current "
+                       "best YES ask <= this threshold (via "
+                       "best_no_bid >= 1 - cap). 0.22 is canonical "
+                       "(100%% hit in backtest); 0.50 is the looser "
+                       "v1-style variant (98.7%% hit, larger per-trade "
+                       "edge). Set to 1.0 to disable. Default 0.22.")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")
