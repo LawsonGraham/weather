@@ -172,69 +172,36 @@ def extract_mos_pred_max(df: pd.DataFrame, station: str, target_local_date: date
 
 
 def load_hrrr_pred_max() -> pd.DataFrame:
-    """Daily max prediction from HRRR for each (station, local_date).
+    """Time-resolved HRRR peak-window max per (station, local_date).
 
-    Take HRRR runs from 06z target day, pick afternoon window forecasts.
+    Uses the canonical compute from `lib.weather.hrrr.hrrr_peak_max_f`
+    with cutoff = now (so "freshest available as of this rebuild"):
+
+    - Only init_times <= datetime.now(UTC)
+    - valid_times must fall in the station's local 12:00-22:00 window
+    - Require >= 6 distinct peak-hours covered, else None
+    - Most recent init_time per valid_time
+
+    Returns a DataFrame with (station, local_date, hrrr_max_t_f).
+    `hrrr_max_t_f` is None on any (station, local_date) where the
+    coverage requirement isn't met — typical for today's date before
+    the afternoon HRRR cycles have published, and always for future
+    dates (HRRR is fxx=6, only 6h ahead).
     """
-    con = _con()
-    # Find a valid temperature column in HRRR
-    schema = con.execute(f"""
-        DESCRIBE SELECT * FROM read_parquet('{REPO}/data/raw/hrrr/*/hourly.parquet', union_by_name=true) LIMIT 1
-    """).fetchall()
-    tmp_cols = [r[0] for r in schema if "t2m" in r[0].lower() or "_0" in r[0].lower()]
-    # Prefer 't2m' variant — look for common HRRR temperature name
-    col = None
-    for c in ["t2m_heightAboveGround_2", "tmp_heightAboveGround_2", "t_heightAboveGround_2"]:
-        if c in [r[0] for r in schema]:
-            col = c
-            break
-    if col is None:
-        # fallback: any column with 't' and '2m' in name
-        for r in schema:
-            if "heightAboveGround_2" in r[0] and "t" in r[0].lower():
-                col = r[0]
-                break
-    if col is None:
-        print("  HRRR: no 2m temperature column found!")
-        return pd.DataFrame()
-    print(f"  HRRR temperature column: {col}")
-    # Aggregate HRRR into per (station, local_date) daily max using valid_time
-    # and each station's own local timezone. Uses ONLY forecasts with init_time
-    # BEFORE local_date ~10 local (entry time), preventing leakage.
-    # Also compute the "pre-peak" forecast (just the 18z UTC run's forecast
-    # for afternoon peak) as a separate column.
+    from datetime import UTC, datetime
+
+    from lib.weather.hrrr import hrrr_peak_max_f_batch
+
+    cutoff = datetime.now(UTC)
+    dates = [d for d in pd.date_range(START_DATE, END_DATE, freq="D").date]
     rows = []
     for st in STATIONS:
-        tz = TZ[st]
-        q = f"""
-            SELECT station, DATE(valid_time AT TIME ZONE '{tz}') AS local_date,
-                   init_time, valid_time, {col} AS t_k
-            FROM read_parquet('{REPO}/data/raw/hrrr/K{st}/hourly.parquet')
-            WHERE {col} IS NOT NULL
-        """
-        try:
-            sub = con.execute(q).fetch_df()
-        except Exception as e:
-            print(f"  HRRR K{st}: {e}")
-            continue
-        sub["init_time"] = pd.to_datetime(sub["init_time"], utc=True)
-        sub["valid_time"] = pd.to_datetime(sub["valid_time"], utc=True)
-        sub["t_f"] = (sub["t_k"] - 273.15) * 9/5 + 32
-        sub["local_date"] = pd.to_datetime(sub["local_date"])
-        # Entry-time cutoff: init_time must be before 10 local on local_date
-        cutoffs = sub["local_date"].apply(
-            lambda d: pd.Timestamp(d).tz_localize(tz).tz_convert("UTC") + pd.Timedelta(hours=10)
-        )
-        sub = sub[sub["init_time"] <= cutoffs]
-        g = sub.groupby("local_date").agg(
-            hrrr_max_t_f=("t_f", "max"),
-            hrrr_mean_t_f=("t_f", "mean"),
-        ).reset_index()
-        g["station"] = st
-        rows.append(g)
-    if not rows:
-        return pd.DataFrame()
-    return pd.concat(rows, ignore_index=True)
+        # One file read per station, iterate dates in-Python.
+        results = hrrr_peak_max_f_batch(st, dates, cutoff_utc=cutoff)
+        for d, val in results.items():
+            rows.append({"station": st, "local_date": pd.Timestamp(d),
+                         "hrrr_max_t_f": val})
+    return pd.DataFrame(rows)
 
 
 def main():
@@ -287,7 +254,7 @@ def main():
     print(f"  NBS filled: {grid.nbs_pred_max_f.notna().sum()}/{len(grid)}")
     print(f"  GFS filled: {grid.gfs_pred_max_f.notna().sum()}/{len(grid)}")
 
-    print("\n[4/4] HRRR forecasts...")
+    print("\n[4/4] HRRR forecasts (canonical time-resolved peak max)...")
     hrrr_df = load_hrrr_pred_max()
     if len(hrrr_df) > 0:
         print(f"  HRRR daily rows: {len(hrrr_df)}")
@@ -295,7 +262,6 @@ def main():
         print(f"  HRRR filled: {grid.hrrr_max_t_f.notna().sum()}/{len(grid)}")
     else:
         grid["hrrr_max_t_f"] = None
-        grid["hrrr_mean_t_f"] = None
 
     # Add lag features: yesterday's max, NBS error yesterday
     grid = grid.sort_values(["station", "local_date"]).reset_index(drop=True)

@@ -81,10 +81,18 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
 
 1. **All three sources present** — NBS + GFS + HRRR. A missing HRRR is a
    hard skip, not a 2-of-3 fallback.
-2. **HRRR peak-window coverage.** HRRR fxx=6 forecasts must cover ≥ 6
-   distinct valid-hours in the station's local 12:00-22:00 peak window.
-   Before this, HRRR's "max over peak" is biased low (it sees only the
-   morning hours) and consensus can appear to hold for the wrong reason.
+2. **HRRR peak-window coverage** (canonical). HRRR fxx=6 forecasts
+   must cover ≥ 6 distinct valid-hours in the station's local
+   12:00-22:00 peak window, and only init_times ≤ the evaluation
+   moment are used. Implemented as `lib.weather.hrrr.hrrr_peak_max_f*`,
+   the **single canonical HRRR compute** used everywhere:
+   - Features builder (`build_features.py` → populates
+     `features.parquet.hrrr_max_t_f`, which the live strategy reads)
+     calls it with `cutoff = datetime.now(UTC)`.
+   - Canonical backtest (`src/consensus_fade_plus1/backtest.py`)
+     calls it with `cutoff = simulated_entry_time`.
+   Both paths run the same Python function, differing only in cutoff.
+   No drift possible.
 3. `consensus_spread ≤ 3.0°F` computed as `max(NBS, GFS, HRRR) − min(...)`.
    No outlier-drop, no weighting.
 4. `plus1_idx` exists among the market's listed buckets (NBS_fav isn't
@@ -103,7 +111,11 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
    hit rate from 98.7% (cap 0.50) to 100.0% (cap 0.22).
 7. `yes_ask[plus1] ≥ 0.005` — excludes tick-floor dust already resolved.
 8. Best NO-ask depth ≥ desired stake (see §6 capacity).
-9. Slippage from best ask to intended stake ≤ 2¢ (protects edge).
+9. **Slippage ≤ 4¢ from best in-range NO ask.** Enforced in code:
+   `_takeable_shares` only sums asks ≤ `min(max_no_price, best_ask +
+   max_ask_walk)`, and the IOC submits at that same price. Levels
+   past the 4¢ ceiling are left on the book even if otherwise
+   eligible.
 10. **Entry-window still open** — within 30 minutes of the first
     moment all gates 1-9 passed for this market. After the window
     closes, further IOCs are blocked (see §4 Execution / Time).
@@ -111,7 +123,7 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
     notional on this market this day ≤ $30 (default). See §7.
 
 If all 11 pass: **buy NO on the plus1 bucket** sized to
-`min(takeable, shares_room, usd_room / max_no_price)`.
+`min(takeable_within_slippage, shares_room, usd_room / max_no_price)`.
 
 ## 4. Execution
 
@@ -541,6 +553,20 @@ this:
 
 ## 10. Changelog
 
+- **2026-04-22 (latest)** — **Single canonical HRRR compute + 4¢
+  slippage cap.** Unified the three drifting HRRR-max definitions
+  (features builder, backtest, exploration notebooks) into
+  `src/lib/weather/hrrr.py`. One function (`hrrr_peak_max_f_from_frame`)
+  implements the canonical time-resolved peak-window max with
+  min_coverage=6; three thin wrappers (`_f`, `_f_now`, `_f_batch`)
+  choose how to load the frame. The features builder and backtest now
+  differ only in cutoff: `datetime.now(UTC)` vs `simulated_entry_time`.
+  Live reads features.parquet as before; semantic is now correct.
+  Also added a per-market slippage cap (`--max-ask-walk 0.04`): the
+  strategy's `_takeable_shares` and IOC submit price both honor
+  `min(max_no_price, best_ask + 0.04)`, which STRATEGY.md §3 filter #9
+  previously only documented as intent. Backtest reproduces
+  bit-exactly (n=72, 72/0, 100%, t=+7.70) via the shared code path.
 - **2026-04-22 (latest)** — **$30/market-per-day USD cap.** Hard
   per-market-per-day risk control: cumulative fill notional is
   tracked in-memory as fills arrive and blocks further IOCs once

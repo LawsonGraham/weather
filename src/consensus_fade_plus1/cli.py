@@ -75,6 +75,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_yes_ask=args.max_yes_ask,
         entry_window_minutes=args.entry_window_minutes,
         max_usd_per_market=args.max_usd_per_market,
+        max_ask_walk=args.max_ask_walk,
     )
 
 
@@ -216,6 +217,13 @@ def main(argv: list[str] | None = None) -> int:
                        "Caveat: in-memory state — a strategy restart "
                        "mid-day currently resets the counter. "
                        "Default $30.")
+    p.add_argument("--max-ask-walk", type=float, default=0.04,
+                  help="Slippage cap: only take asks within this many "
+                       "dollars of the best in-range NO ask. Prevents "
+                       "sweeping deep into the book when levels are "
+                       "sparse. Effective IOC price is "
+                       "min(max_no_price, best_ask + max_ask_walk). "
+                       "Default $0.04 (4 cents).")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")

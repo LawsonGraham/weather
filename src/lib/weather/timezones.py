@@ -21,3 +21,22 @@ CITY_TO_TZ: dict[str, str] = {
     "Los Angeles":   "America/Los_Angeles",
     "San Francisco": "America/Los_Angeles",
 }
+
+# Station-code → IANA timezone. Station codes are the ICAO identifier
+# minus the leading "K" (LGA, ATL, MIA, ...). Used by lib.weather.hrrr
+# and any other module that needs per-station local time but only has
+# the station code (not the full city name).
+STATION_TZ: dict[str, str] = {
+    "LGA": "America/New_York",
+    "NYC": "America/New_York",
+    "ATL": "America/New_York",
+    "MIA": "America/New_York",
+    "ORD": "America/Chicago",
+    "DAL": "America/Chicago",
+    "HOU": "America/Chicago",
+    "AUS": "America/Chicago",
+    "DEN": "America/Denver",
+    "SEA": "America/Los_Angeles",
+    "LAX": "America/Los_Angeles",
+    "SFO": "America/Los_Angeles",
+}

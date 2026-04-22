@@ -99,9 +99,12 @@ def _mos(model: str) -> pd.DataFrame:
     return df
 
 
-def _hrrr() -> pd.DataFrame:
+def _hrrr() -> dict[str, pd.DataFrame]:
+    """Load each station's raw HRRR into a per-station frame. The
+    per-station DataFrame is what `lib.weather.hrrr.hrrr_peak_max_f_from_frame`
+    wants (columns: init_time, valid_time, t_k)."""
     con = duckdb.connect()
-    rows = []
+    frames: dict[str, pd.DataFrame] = {}
     for st in TZ:
         try:
             sub = con.execute(f"""
@@ -111,12 +114,12 @@ def _hrrr() -> pd.DataFrame:
             """).df()
         except Exception:
             continue
-        sub["station"] = st
+        if sub.empty:
+            continue
         sub["init_time"] = pd.to_datetime(sub["init_time"], utc=True)
         sub["valid_time"] = pd.to_datetime(sub["valid_time"], utc=True)
-        sub["t_f"] = (sub["t_k"] - 273.15) * 9 / 5 + 32
-        rows.append(sub[["station", "init_time", "valid_time", "t_f"]])
-    return pd.concat(rows, ignore_index=True)
+        frames[st] = sub[["init_time", "valid_time", "t_k"]]
+    return frames
 
 
 def _prices() -> pd.DataFrame:
@@ -138,16 +141,11 @@ def _nbs_gfs_as_of(sub: pd.DataFrame, t: pd.Timestamp,
     return float(s[s.runtime == s.runtime.max()].n_x_f.max())
 
 
-def _hrrr_as_of(sub: pd.DataFrame, t: pd.Timestamp,
-                pk_start: pd.Timestamp, pk_end: pd.Timestamp,
-                min_cov: int) -> float | None:
-    s = sub[(sub.init_time <= t) & (sub.valid_time >= pk_start) & (sub.valid_time <= pk_end)]
-    if s.empty:
-        return None
-    latest = s.sort_values("init_time").groupby("valid_time").tail(1)
-    if latest.valid_time.dt.hour.nunique() < min_cov:
-        return None
-    return float(latest.t_f.max())
+# `_hrrr_as_of` removed — HRRR compute now lives in
+# `lib.weather.hrrr.hrrr_peak_max_f_from_frame`, the single canonical
+# implementation shared by this backtest AND the features builder
+# (which live reads via features.parquet). Any change to HRRR
+# semantics happens in one place.
 
 
 def _pick_price(prices: pd.DataFrame, slug: str, at: pd.Timestamp,
@@ -160,7 +158,7 @@ def _pick_price(prices: pd.DataFrame, slug: str, at: pd.Timestamp,
 
 
 def run_strategy(tbl: pd.DataFrame, nbs: pd.DataFrame, gfs: pd.DataFrame,
-                 hrrr: pd.DataFrame, prices: pd.DataFrame, *,
+                 hrrr: dict[str, pd.DataFrame], prices: pd.DataFrame, *,
                  consensus_max: float = CONSENSUS_MAX_F,
                  offset: int = OFFSET,
                  local_floor: int = LOCAL_FLOOR_HOUR,
@@ -168,6 +166,8 @@ def run_strategy(tbl: pd.DataFrame, nbs: pd.DataFrame, gfs: pd.DataFrame,
                  yes_price_min: float = YES_PRICE_MIN,
                  hrrr_min_cov: int = HRRR_MIN_PEAK_COV) -> pd.DataFrame:
     """Walk every (city, market_date); return a trade row per fill."""
+    from lib.weather.hrrr import hrrr_peak_max_f_from_frame
+
     rows = []
     for (city, md), grp in tbl.groupby(["city", "market_date"]):
         day = grp.sort_values("bucket_idx").reset_index(drop=True)
@@ -188,7 +188,7 @@ def run_strategy(tbl: pd.DataFrame, nbs: pd.DataFrame, gfs: pd.DataFrame,
         pk_e = (pd.Timestamp(target).tz_localize(tz) + pd.Timedelta(hours=22)).tz_convert("UTC")
         nbs_st = nbs[nbs.station == station]
         gfs_st = gfs[gfs.station == station]
-        hrrr_st = hrrr[hrrr.station == station]
+        hrrr_frame = hrrr.get(station)
         local_mid_utc = pd.Timestamp(target).tz_localize(tz).tz_convert("UTC")
 
         entry_ts = None
@@ -196,7 +196,9 @@ def run_strategy(tbl: pd.DataFrame, nbs: pd.DataFrame, gfs: pd.DataFrame,
             t = local_mid_utc + pd.Timedelta(hours=local_hr)
             n = _nbs_gfs_as_of(nbs_st, t, pk_s, pk_e)
             g = _nbs_gfs_as_of(gfs_st, t, pk_s, pk_e)
-            h = _hrrr_as_of(hrrr_st, t, pk_s, pk_e, hrrr_min_cov)
+            h = hrrr_peak_max_f_from_frame(hrrr_frame, target, tz, t,
+                                           min_coverage=hrrr_min_cov) \
+                if hrrr_frame is not None else None
             if n is None or g is None or h is None:
                 continue
             if max(n, g, h) - min(n, g, h) <= consensus_max:

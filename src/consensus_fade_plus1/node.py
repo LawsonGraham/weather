@@ -55,7 +55,8 @@ def _build_node(markets: list[TradeableMarket], *,
                 min_entry_hour_local: int = 16,
                 max_yes_ask: float = 0.22,
                 entry_window_minutes: int = 30,
-                max_usd_per_market: float = 30.0):
+                max_usd_per_market: float = 30.0,
+                max_ask_walk: float = 0.04):
     """Build a Nautilus TradingNode wired for today's markets.
 
     Lazy-imports heavy Nautilus symbols so module is cheap for CLI help.
@@ -131,6 +132,7 @@ def _build_node(markets: list[TradeableMarket], *,
         max_yes_ask=max_yes_ask,
         entry_window_minutes=entry_window_minutes,
         max_usd_per_market=max_usd_per_market,
+        max_ask_walk=max_ask_walk,
     )
     strategy = ConsensusFadeStrategy(config=strategy_config)
 
@@ -149,7 +151,8 @@ def run(*, max_no_price: float = 0.99,
         min_entry_hour_local: int = 16,
         max_yes_ask: float = 0.22,
         entry_window_minutes: int = 30,
-        max_usd_per_market: float = 30.0) -> int:
+        max_usd_per_market: float = 30.0,
+        max_ask_walk: float = 0.04) -> int:
     """Start the trading node. Runs continuously until Ctrl+C.
 
     Initial instrument set = today's qualifying markets (seed for the
@@ -201,6 +204,8 @@ def run(*, max_no_price: float = 0.99,
     print(f"[node] per-market USD cap: ${max_usd_per_market:.2f} "
           f"(resets per market, in-memory — restarts currently reset it; "
           f"see STRATEGY.md §7)")
+    print(f"[node] slippage cap: max_ask_walk=${max_ask_walk:.3f} "
+          f"above best in-range NO ask")
 
     node = _build_node(markets,
                        max_no_price=max_no_price,
@@ -210,7 +215,8 @@ def run(*, max_no_price: float = 0.99,
                        min_entry_hour_local=min_entry_hour_local,
                        max_yes_ask=max_yes_ask,
                        entry_window_minutes=entry_window_minutes,
-                       max_usd_per_market=max_usd_per_market)
+                       max_usd_per_market=max_usd_per_market,
+                       max_ask_walk=max_ask_walk)
     try:
         node.run()
     finally:

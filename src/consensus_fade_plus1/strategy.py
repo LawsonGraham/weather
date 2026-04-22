@@ -110,6 +110,16 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # resolve. A tight ceiling here would reject otherwise-valid trades.
     max_no_price: float = 0.99
 
+    # Slippage cap: only lift asks within this many dollars of the best
+    # in-range NO ask. Prevents the strategy from sweeping deep into the
+    # book when a market has a thin best level then a jump to a much
+    # worse next level. STRATEGY.md §3 filter #9 requires <= 2c-4c;
+    # 0.04 is the accepted default. Set to 1.0 to effectively disable.
+    # Example: best_no_ask=0.82, max_ask_walk=0.04 -> only take asks
+    # <= 0.86. Deeper asks (e.g., 0.90) are left on the book even if
+    # otherwise eligible.
+    max_ask_walk: float = 0.04
+
     # Market-wisdom cap: only trade when best_yes_ask <= this (equivalently,
     # best_no_bid >= 1 - max_yes_ask). At 0.22 this means we require the
     # market itself to agree the +1 bucket is unlikely before we fade it.
@@ -552,16 +562,38 @@ class ConsensusFadeStrategy(Strategy):
                 )
 
     def _takeable_shares(self, iid: InstrumentId) -> float:
-        """Sum of ask qty at prices ≤ max_no_price. 0 if book empty or no qualifying asks."""
+        """Sum of ask qty at prices within the effective ceiling — the
+        tighter of `max_no_price` (absolute) and `best_ask + max_ask_walk`
+        (slippage cap from best). 0 if book empty or no qualifying asks."""
         book = self.cache.order_book(iid)
         if book is None:
             return 0.0
         total = 0.0
+        best_ask: float | None = None
         for lvl in book.asks():
-            if float(lvl.price) > self.config.max_no_price:
-                break  # asks sorted ascending — rest are too expensive
+            px = float(lvl.price)
+            if best_ask is None:
+                best_ask = px
+                if best_ask > self.config.max_no_price:
+                    return 0.0  # even best ask is above absolute ceiling
+            ceiling = min(self.config.max_no_price,
+                          best_ask + self.config.max_ask_walk)
+            if px > ceiling:
+                break  # asks sorted ascending — rest are past slippage cap
             total += float(lvl.size())
         return total
+
+    def _effective_ioc_price(self, iid: InstrumentId) -> float | None:
+        """Submit price for the IOC: the tighter of max_no_price and
+        best_ask + max_ask_walk. None if no best ask exists."""
+        book = self.cache.order_book(iid)
+        if book is None:
+            return None
+        for lvl in book.asks():
+            best_ask = float(lvl.price)
+            return min(self.config.max_no_price,
+                       best_ask + self.config.max_ask_walk)
+        return None
 
     # --- Action: submit an IOC when opportunity + room exist --------------
 
@@ -710,15 +742,17 @@ class ConsensusFadeStrategy(Strategy):
         self._submit_ioc_buy(iid, qty)
 
     def _submit_ioc_buy(self, iid: InstrumentId, qty: int) -> None:
-        """Submit a limit BUY at max_no_price with IOC time-in-force.
-
-        IOC = immediate-or-cancel: fills what it can right now at our price
-        or better, cancels the rest. Never rests on the book.
-        """
+        """Submit a limit BUY with IOC time-in-force. Price = tighter of
+        max_no_price (absolute ceiling) and best_ask + max_ask_walk
+        (slippage cap from best). Venue fills any ask <= our price, then
+        cancels the rest — never rests on the book."""
         instrument = self.cache.instrument(iid)
         if instrument is None:
             return
-        price = self._snap_to_tick(self.config.max_no_price, instrument)
+        eff_price = self._effective_ioc_price(iid)
+        if eff_price is None:
+            return  # no asks — nothing to take
+        price = self._snap_to_tick(eff_price, instrument)
         order = self.order_factory.limit(
             instrument_id=iid,
             order_side=OrderSide.BUY,
