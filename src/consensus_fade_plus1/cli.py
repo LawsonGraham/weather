@@ -75,7 +75,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_yes_ask=args.max_yes_ask,
         entry_window_minutes=args.entry_window_minutes,
         max_usd_per_market=args.max_usd_per_market,
-        max_ask_walk=args.max_ask_walk,
     )
 
 
@@ -176,9 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_discover)
 
     p = sub.add_parser("run", help="Start the live trading node")
-    p.add_argument("--max-no-price", type=float, default=0.99,
-                  help="Hard ceiling on NO buy price. Default 0.99 lets "
-                       "the market-wisdom cap do the real filtering.")
+    p.add_argument("--max-no-price", type=float, default=0.93,
+                  help="Hard ceiling on NO buy price. At 0.93, min edge "
+                       "per share = 7c on NO resolution. Also acts as a "
+                       "slippage cap: asks above 0.93 are left on the "
+                       "book, we never pay more than 0.93 for NO. "
+                       "Default 0.93.")
     p.add_argument("--shares-per-market", type=int, default=110)
     p.add_argument("--lookahead-days", type=int, default=1,
                   help="Subscribe to today + N days ahead (default 1)")
@@ -186,19 +188,24 @@ def main(argv: list[str] | None = None) -> int:
                   help="Hard cap on IOC submissions this session — strategy "
                        "flips the circuit breaker after N submissions "
                        "regardless of outcome. Default: unlimited.")
-    p.add_argument("--min-entry-hour-local", type=int, default=16,
+    p.add_argument("--min-entry-hour-local", type=int, default=15,
                   help="Minimum city-LOCAL hour (0-23) before each market "
                        "may fire. Evaluated per-instrument against the "
-                       "airport's tz. Earlier floors collapse OOS (13 local "
-                       "t=+1.06, 16 local t=+3.67/+7.70). Default 16. "
-                       "Set to 0 to disable.")
-    p.add_argument("--max-yes-ask", type=float, default=0.22,
+                       "airport's tz. Below 15 local the market-wisdom "
+                       "gate is unreliable (hit rate drops to ~89%% at "
+                       "14 local). At 15 local a sharp discontinuity "
+                       "brings hit rate to ~100%% (tight cap) or ~94%% "
+                       "(relaxed cap). Default 15. Set to 0 to disable.")
+    p.add_argument("--max-yes-ask", type=float, default=0.50,
                   help="Market-wisdom cap. Only trade when the current "
                        "best YES ask <= this threshold (via "
-                       "best_no_bid >= 1 - cap). 0.22 is canonical "
-                       "(100%% hit in backtest); 0.50 is the looser "
-                       "v1-style variant (98.7%% hit, larger per-trade "
-                       "edge). Set to 1.0 to disable. Default 0.22.")
+                       "best_no_bid >= 1 - cap). At 0.50 we require "
+                       "the market to be at/below coin-flip on +1 "
+                       "before fading it. Backtest: 0.50 -> n=31 / "
+                       "93.5%% hit / t=+2.96 with 2 visible losses. "
+                       "Tightening to 0.22 gives 100%% hit but only "
+                       "n=20 (cosmetic); loosening to 0.75 breaks OOS. "
+                       "Default 0.50. Set to 1.0 to disable.")
     p.add_argument("--entry-window-minutes", type=int, default=30,
                   help="Bounded window after a market first becomes "
                        "eligible (all gates pass). Strategy keeps "
@@ -217,13 +224,6 @@ def main(argv: list[str] | None = None) -> int:
                        "Caveat: in-memory state — a strategy restart "
                        "mid-day currently resets the counter. "
                        "Default $30.")
-    p.add_argument("--max-ask-walk", type=float, default=0.04,
-                  help="Slippage cap: only take asks within this many "
-                       "dollars of the best in-range NO ask. Prevents "
-                       "sweeping deep into the book when levels are "
-                       "sparse. Effective IOC price is "
-                       "min(max_no_price, best_ask + max_ask_walk). "
-                       "Default $0.04 (4 cents).")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")

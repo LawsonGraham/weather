@@ -150,3 +150,24 @@ on the NO book. Also replaced UTC-18 gate with per-city local-16 gate
 via `src/lib/weather/timezones.py`. CLI flags: `--max-yes-ask 0.22`
 (default), `--min-entry-hour-local 16` (default). Looser cap 0.50
 remains available as `--max-yes-ask 0.50` for paper-trade comparison.
+
+## [2026-04-22 final] strategy | Consensus-Fade simplified to minimal canonical rule
+
+Stripped back after overfitting concern. Final canonical rule:
+- consensus <= 3F across NBS + GFS + HRRR
+- entry >= 15 local (down from 16)
+- yes_ask in [0.07, 0.50] (widened from [0.005, 0.22])
+- max_no_price = 0.93 replaces max_ask_walk entirely (does both
+  slippage cap and 7c edge floor via one parameter)
+- $30/market/day USD cap, 30-min entry window retained
+
+Backtest: n=31, 29W/2L, 93.5% hit, +$0.126/share, t=+2.96 full,
+IS t=+7.03, OOS t=+0.88. Two visible losses both on 2026-03-28
+(Atlanta yes=0.30, Chicago yes=0.375) — "market at 30-40% on +1,
+consensus says no, market wins" pattern. Tight reference cap 0.22
+remains documented as cosmetic 100% hit at n=20.
+
+Rationale: user flagged prior cap-0.22 rule was cosmetically
+perfect but sample was too thin. Relaxing the cap captures real
+losses that inform risk sizing and kill-switches. Simplification
+matches "don't let filter stack hide failure modes" principle.

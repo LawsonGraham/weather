@@ -104,30 +104,22 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # automatically as they appear; resolved markets get unsubscribed.
     instrument_ids: list[str]
 
-    # Price ceiling for our IOC BUYs. The v2+cap rule pays NO up to ~0.99
-    # per share because the `max_yes_ask` filter already restricts trades
-    # to high-NO-price regimes where the market agrees the +1 won't
-    # resolve. A tight ceiling here would reject otherwise-valid trades.
-    max_no_price: float = 0.99
+    # Price ceiling for our IOC BUYs. At 0.93, we guarantee a minimum 7c
+    # edge per share: win = $1 - $0.93 = $0.07 on NO resolution. This is
+    # both the slippage cap (asks above $0.93 are left on the book) AND
+    # the per-trade edge floor. Simpler than two separate controls.
+    # See STRATEGY.md §3 filter #6.
+    max_no_price: float = 0.93
 
-    # Slippage cap: only lift asks within this many dollars of the best
-    # in-range NO ask. Prevents the strategy from sweeping deep into the
-    # book when a market has a thin best level then a jump to a much
-    # worse next level. STRATEGY.md §3 filter #9 requires <= 2c-4c;
-    # 0.04 is the accepted default. Set to 1.0 to effectively disable.
-    # Example: best_no_ask=0.82, max_ask_walk=0.04 -> only take asks
-    # <= 0.86. Deeper asks (e.g., 0.90) are left on the book even if
-    # otherwise eligible.
-    max_ask_walk: float = 0.04
-
-    # Market-wisdom cap: only trade when best_yes_ask <= this (equivalently,
-    # best_no_bid >= 1 - max_yes_ask). At 0.22 this means we require the
-    # market itself to agree the +1 bucket is unlikely before we fade it.
-    # Canonical v2 rule (STRATEGY.md §3 filter #5). Drops backtest hit rate
-    # from 98.7% (cap 0.50) to 100% (cap 0.22) at the cost of ~15% per-trade
-    # edge. Set to 0.50 (or 1.0) to disable the market-wisdom gate and fall
-    # back to the v1-style wider filter.
-    max_yes_ask: float = 0.22
+    # Market-wisdom upper cap: only trade when best_yes_ask <= this
+    # (equivalently, best_no_bid >= 1 - max_yes_ask). At 0.50 this means
+    # we require the market to be at or below ~50/50 on the +1 bucket —
+    # retail hasn't consolidated around "likely". Backtest shows
+    # relaxing beyond 0.50 causes hit rate to collapse; tightening to
+    # 0.22 gives 100% hit but only 20 trades (cosmetic sample). 0.50
+    # yields n=31 / 93.5% hit / t=+2.96 with 2 visible losses — honest
+    # enough to validate. See STRATEGY.md §3 filter #5 and §5.
+    max_yes_ask: float = 0.50
 
     # Per-market position cap in shares. Secondary safety; the primary
     # per-market risk control is `max_usd_per_market` below.
@@ -164,15 +156,15 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # Minimum city-LOCAL hour (0-23) before the strategy may fire on a
     # given instrument. The gate is evaluated per-market against the
     # airport's local timezone (America/New_York for ATL/NYC/MIA, etc.).
-    # Earlier local hours produce materially worse OOS — the 16-local
-    # floor captures both HRRR full-peak-window coverage (fxx=6 from
-    # inits 10-16 local) and intraday METAR absorption into the book
-    # (winner / loser YES prices diverge around local 13-15). Backtest:
-    # 13 local t=+1.06, 15 local t=+2.51, 16 local t=+3.67 (with cap 0.50)
-    # or t=+7.70 (with canonical cap 0.22). See
-    # notebooks/experiments/backtest-v3/consensus_optimal_sweep.py. Set
-    # to 0 to disable (UTC behavior falls out from per-market tz lookup).
-    min_entry_hour_local: int = 16
+    # At 15 local there's a sharp discontinuity: hit rate jumps from
+    # ~89% at 14 local to ~100% at 15 local (cap 0.22). This is the
+    # moment the market has absorbed enough peak-hour METAR to separate
+    # winners from losers via YES pricing. Lowering below 15 breaks the
+    # strategy; raising to 16 or 17 just loses trades. Backtest with
+    # yes[0.07, 0.50]: 14 local t=+1.13, 15 local t=+2.96, 16 local
+    # t=+2.62 — 15 is a mild peak. Set to 0 to disable (UTC behavior
+    # falls out from per-market tz lookup).
+    min_entry_hour_local: int = 15
 
     # Bounded-window continuous take. Once a market first passes both the
     # local-hour gate AND the market-wisdom cap, the strategy keeps
@@ -562,38 +554,20 @@ class ConsensusFadeStrategy(Strategy):
                 )
 
     def _takeable_shares(self, iid: InstrumentId) -> float:
-        """Sum of ask qty at prices within the effective ceiling — the
-        tighter of `max_no_price` (absolute) and `best_ask + max_ask_walk`
-        (slippage cap from best). 0 if book empty or no qualifying asks."""
+        """Sum of ask qty at prices <= max_no_price. 0 if book empty or
+        no qualifying asks. The max_no_price ceiling (default 0.93)
+        serves as both the per-trade edge floor (guaranteeing >=7c/share
+        win if NO resolves) AND the slippage cap (we never pay more
+        than 0.93 for NO regardless of book depth)."""
         book = self.cache.order_book(iid)
         if book is None:
             return 0.0
         total = 0.0
-        best_ask: float | None = None
         for lvl in book.asks():
-            px = float(lvl.price)
-            if best_ask is None:
-                best_ask = px
-                if best_ask > self.config.max_no_price:
-                    return 0.0  # even best ask is above absolute ceiling
-            ceiling = min(self.config.max_no_price,
-                          best_ask + self.config.max_ask_walk)
-            if px > ceiling:
-                break  # asks sorted ascending — rest are past slippage cap
+            if float(lvl.price) > self.config.max_no_price:
+                break  # asks sorted ascending — rest exceed our ceiling
             total += float(lvl.size())
         return total
-
-    def _effective_ioc_price(self, iid: InstrumentId) -> float | None:
-        """Submit price for the IOC: the tighter of max_no_price and
-        best_ask + max_ask_walk. None if no best ask exists."""
-        book = self.cache.order_book(iid)
-        if book is None:
-            return None
-        for lvl in book.asks():
-            best_ask = float(lvl.price)
-            return min(self.config.max_no_price,
-                       best_ask + self.config.max_ask_walk)
-        return None
 
     # --- Action: submit an IOC when opportunity + room exist --------------
 
@@ -742,17 +716,15 @@ class ConsensusFadeStrategy(Strategy):
         self._submit_ioc_buy(iid, qty)
 
     def _submit_ioc_buy(self, iid: InstrumentId, qty: int) -> None:
-        """Submit a limit BUY with IOC time-in-force. Price = tighter of
-        max_no_price (absolute ceiling) and best_ask + max_ask_walk
-        (slippage cap from best). Venue fills any ask <= our price, then
-        cancels the rest — never rests on the book."""
+        """Submit a limit BUY at max_no_price with IOC time-in-force.
+        Venue fills any ask at or below max_no_price (default 0.93),
+        then cancels the rest — never rests on the book. Deeper asks
+        are left untouched, so per-share edge is always >=7c (under
+        default) regardless of book depth."""
         instrument = self.cache.instrument(iid)
         if instrument is None:
             return
-        eff_price = self._effective_ioc_price(iid)
-        if eff_price is None:
-            return  # no asks — nothing to take
-        price = self._snap_to_tick(eff_price, instrument)
+        price = self._snap_to_tick(self.config.max_no_price, instrument)
         order = self.order_factory.limit(
             instrument_id=iid,
             order_side=OrderSide.BUY,

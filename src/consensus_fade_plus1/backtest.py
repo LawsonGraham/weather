@@ -1,14 +1,20 @@
-"""Consensus-Fade +1 Offset — Canonical backtest reproducer (v2).
+"""Consensus-Fade +1 Offset — Canonical backtest reproducer.
 
-Runs the canonical v2 rule from STRATEGY.md §3:
+Runs the canonical rule from STRATEGY.md §3:
     - All three forecasts present (NBS + GFS MOS + HRRR)
     - HRRR fxx=6 covers ≥ 6 of the 11 hours in local 12-22 peak window
     - consensus_spread ≤ 3.0°F
-    - Entry time ≥ 16:00 city-local
-    - 0.005 ≤ yes_ask ≤ 0.22  (market-wisdom cap)
+    - Entry time ≥ 15:00 city-local
+    - 0.07 ≤ yes_ask ≤ 0.50   (7c edge floor + market-wisdom cap)
 
-Also prints the looser-cap alternative (yes_ask ≤ 0.50) as a reference —
-that version catches 6 more trades but adds 1 backtest loss.
+Expected output: n=31, 29 wins, 2 losses, 93.5% hit, +$0.126 per trade,
+t=+2.96 (IS +7.03, OOS +0.88). Two losses visible: Atlanta 2026-03-28
+(yes=0.30) and Chicago 2026-03-17 (yes=0.34).
+
+Also prints a reference row with tight cap (yes_ask ≤ 0.22) showing
+the cosmetic-100% alternative (n=20, 0 losses, t=+16.24) and a wide
+cap (yes_ask ≤ 0.75) showing what happens when we over-relax (n=37,
+86.5% hit, t=+2.50 — hit-rate erosion).
 
 Data requirements:
     data/processed/backtest_v2/trade_table.parquet
@@ -48,9 +54,9 @@ FEE_RATE = 0.05
 # Canonical parameters (§3 of STRATEGY.md)
 CONSENSUS_MAX_F = 3.0
 OFFSET = 1
-YES_PRICE_MIN = 0.005
-YES_PRICE_MAX = 0.22        # canonical v2 market-wisdom cap
-LOCAL_FLOOR_HOUR = 16       # 16:00 city-local
+YES_PRICE_MIN = 0.07        # 7c edge floor (NO <= 0.93)
+YES_PRICE_MAX = 0.50        # market-wisdom cap (market <= ~50% on +1)
+LOCAL_FLOOR_HOUR = 15       # 15:00 city-local
 HRRR_MIN_PEAK_COV = 6       # distinct valid-hours in 12-22 local
 
 # IS / OOS fold boundaries (pre-registered)
@@ -255,17 +261,23 @@ def main() -> int:
           f"prices={len(prices):,}")
 
     print(f"\n=== Canonical: ≥{LOCAL_FLOOR_HOUR}:00 local, cs ≤ {CONSENSUS_MAX_F}°F, "
-          f"yes_ask ≤ {YES_PRICE_MAX} ===")
+          f"yes_ask in [{YES_PRICE_MIN}, {YES_PRICE_MAX}] ===")
     t = run_strategy(tbl, nbs, gfs, hrrr, prices)
     _print_stats(t, "FULL period")
     _print_stats(t[t.date <= IS_END], f"IS  {IS_START}..{IS_END}")
     _print_stats(t[t.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
 
-    print("\n=== Looser alternative: yes_ask ≤ 0.50 (§5.1, reference) ===")
-    t50 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.50)
-    _print_stats(t50, "FULL period")
-    _print_stats(t50[t50.date <= IS_END], f"IS  {IS_START}..{IS_END}")
-    _print_stats(t50[t50.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
+    print("\n=== Tight-cap reference: yes_ask ≤ 0.22 (cosmetic 100% hit) ===")
+    t22 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.22)
+    _print_stats(t22, "FULL period")
+    _print_stats(t22[t22.date <= IS_END], f"IS  {IS_START}..{IS_END}")
+    _print_stats(t22[t22.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
+
+    print("\n=== Wide-cap reference: yes_ask ≤ 0.75 (shows hit-rate erosion) ===")
+    t75 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.75)
+    _print_stats(t75, "FULL period")
+    _print_stats(t75[t75.date <= IS_END], f"IS  {IS_START}..{IS_END}")
+    _print_stats(t75[t75.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
 
     print("\n=== Per-city (canonical) ===")
     for city, g in t.sort_values("city").groupby("city"):

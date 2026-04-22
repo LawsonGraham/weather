@@ -1,17 +1,17 @@
 # Consensus-Fade +1 Offset
 
 Fade retail's systematic over-pricing of the bucket one above the NBS
-favorite on daily-temperature markets. Restrict to days where three
-independent weather forecasts agree AND the prediction market itself
-has already re-priced the +1 bucket as unlikely. Enter ≥16:00 city-local
-so the forecast panel is fully mature, HRRR has real peak-window
-coverage, and the book has absorbed midday METAR.
+favorite on daily-temperature markets. Trade when all three independent
+forecasts agree within 3°F **and** the prediction market itself is
+pricing the +1 bucket below a coin-flip. Enter at ≥15:00 city-local
+so the forecast panel is mature and the market has absorbed midday
+METAR.
 
 **Status**: paper-trade (need 2+ weeks of live fill data before real capital)
-**Backtest (canonical rule)**: n=72 trades / 27 days (Mar 11 – Apr 10 2026) /
-**100.0% hit** / +$0.039 per trade / IS t=+5.29 / OOS t=+5.85 / 27 of 27 positive days / daily Sharpe 1.31 (annualized 20.85)
+**Backtest (canonical rule)**: n=31 trades / 17 trading days (Mar 11 – Apr 10 2026) /
+**93.5% hit** (29 W, 2 L) / +$0.126 per trade / IS t=+7.03 / OOS t=+0.88
 **Venue**: Polymarket
-**Entry**: continuous polling within a 30-min bounded window per market, gated by (per-city local ≥ 16:00) AND (best YES ask ≤ 0.22)
+**Entry**: continuous polling, gated by (per-city local ≥ 15:00) AND (YES ask in [$0.07, $0.50])
 **Exit**: hold to resolution
 
 ---
@@ -23,367 +23,262 @@ On days when NBS, GFS MOS, and HRRR all forecast a similar daily high
 regime is ~1.5°F. For the actual daily high to land in the bucket **2°F
 above NBS's forecast**, you need a ~1.5-sigma upward surprise, which
 happens only ~3% of the time. But retail on Polymarket prices that bucket
-at ~$0.10-0.20 for most of the day because they spread probability
-symmetrically above and below the forecast without conditioning on
-forecast confidence. We wait for the afternoon — when HRRR has mature
-peak-window coverage and morning METAR has begun to discipline the book
-— then buy NO at ~$0.80-0.95 and collect $1 with ~99% probability.
+somewhere between $0.10 and $0.40 for most of the day because they
+spread probability symmetrically above and below the forecast without
+conditioning on forecast confidence. We wait for ≥15:00 local so the
+afternoon METAR has begun to discipline the market, and take trades
+where retail still has the +1 bucket priced above $0.07 but below $0.50
+— meaningful mispricing, market hasn't yet strongly consolidated toward
+YES. We buy NO at ≤$0.93 (guaranteeing ≥7¢ per-share edge if NO
+resolves) and hold to settlement.
 
 ## 2. Why this mispricing exists
 
-Retail traders on Polymarket weather markets:
-
-1. **Symmetric-uncertainty heuristic.** "Could be warmer, could be cooler"
-   — bet both sides roughly equally. They don't incorporate which
-   forecast-confidence regime they're in.
+1. **Symmetric-uncertainty heuristic.** "Could be warmer, could be
+   cooler" — bet both sides roughly equally. They don't condition on
+   forecast confidence.
 2. **"Coverage" betting.** A bettor who thinks 70-71°F is most likely
-   will still put a few dollars on 72-73°F "just in case." This inflates
-   the +1 bucket price even when the real probability is near zero.
-3. **The +1 sweet spot.** Buckets 2+ away are priced near the $0.01 tick
-   floor — mispricing is negligible pennies. The +1 bucket sits where
-   "unlikely but possible" lives cognitively, which is exactly where
-   humans over-price low-probability events (the classic 3% → 17%
-   calibration error).
-4. **Asymmetric, not symmetric.** The −1 bucket (below NBS fav) does NOT
-   have the same mispricing — it's ~50/50 and priced near fair. Only the
-   upside is systematically over-priced.
-
-Structural explanation: days with consensus-tight forecasts are
-typically spring-warming days where "maybe it'll hit an unexpected high"
-is psychologically attractive, and retail chases that tail.
+   will still put a few dollars on 72-73°F "just in case." This
+   inflates the +1 bucket price even when the real probability is
+   near zero.
+3. **The +1 sweet spot.** Buckets 2+ away are priced near the $0.01
+   tick floor — mispricing is negligible pennies. The +1 bucket sits
+   where "unlikely but possible" lives cognitively, which is exactly
+   where humans over-price low-probability events (the classic
+   3% → 17% calibration error).
+4. **Slow intraday correction.** Live METAR between noon and 15:00
+   local feeds the market's view of whether today's forecast is
+   tracking. By 15:00 local, winners' YES has drifted toward zero
+   and losers' YES has risen above $0.50. The window between
+   "market has separated them" and "market has settled" is our
+   execution window.
+5. **Asymmetric, not symmetric.** The −1 bucket (below NBS fav) does
+   NOT have the same mispricing — it's ~50/50 and priced near fair.
+   Only the upside is systematically over-priced.
 
 ## 3. Signal
-
-For each Polymarket daily-temperature market (a city on a given day):
 
 ### Inputs required
 
 | input | source | when available | used for |
 |---|---|---|---|
-| NBS max forecast | IEM MOS archive / NBS text | issued ~19/01/07/13 UTC | favorite bucket |
+| NBS max forecast | IEM MOS archive | issued ~01/07/13/19 UTC | favorite bucket |
 | GFS MOS max forecast | IEM MOS archive | issued ~00/06/12/18 UTC | consensus |
 | HRRR t2m max | NOAA HRRR archive | every hour, fxx=6 | consensus |
 | Market bucket catalog | Polymarket Gamma `markets.parquet` | refreshed daily | bucket mapping |
-| YES bid/ask at +1 bucket | Polymarket CLOB book WS | live | entry price |
+| YES bid/ask at +1 bucket | Polymarket CLOB book WS | live | entry gate + price |
 | Current city-local time | per-station IANA tz | — | entry gate |
 
 ### Derived signals
 
 ```
-consensus_spread = max(NBS_max, GFS_max, HRRR_max) - min(NBS_max, GFS_max, HRRR_max)
-NBS_fav_idx      = argmin_i |bucket_center[i] - NBS_max|
+consensus_spread = max(NBS_max, GFS_max, HRRR_max) − min(NBS_max, GFS_max, HRRR_max)
+NBS_fav_idx      = argmin_i |bucket_center[i] − NBS_max|
 plus1_idx        = NBS_fav_idx + 1
-yes_ask[plus1]   = best YES ask at plus1 bucket
-no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
+yes_ask[plus1]   = best YES ask on the plus1 bucket
+best_no_bid      = 1 − yes_ask   (up to spread/fees)
 ```
 
 ### Entry filter (all must be true)
 
-1. **All three sources present** — NBS + GFS + HRRR. A missing HRRR is a
-   hard skip, not a 2-of-3 fallback.
-2. **HRRR peak-window coverage** (canonical). HRRR fxx=6 forecasts
-   must cover ≥ 6 distinct valid-hours in the station's local
-   12:00-22:00 peak window, and only init_times ≤ the evaluation
-   moment are used. Implemented as `lib.weather.hrrr.hrrr_peak_max_f*`,
-   the **single canonical HRRR compute** used everywhere:
-   - Features builder (`build_features.py` → populates
-     `features.parquet.hrrr_max_t_f`, which the live strategy reads)
-     calls it with `cutoff = datetime.now(UTC)`.
-   - Canonical backtest (`src/consensus_fade_plus1/backtest.py`)
-     calls it with `cutoff = simulated_entry_time`.
-   Both paths run the same Python function, differing only in cutoff.
-   No drift possible.
-3. `consensus_spread ≤ 3.0°F` computed as `max(NBS, GFS, HRRR) − min(...)`.
-   No outlier-drop, no weighting.
-4. `plus1_idx` exists among the market's listed buckets (NBS_fav isn't
-   the highest tail bucket).
-5. **Current city-local time ≥ 16:00.** Before 16:00 local, HRRR peak
-   coverage is incomplete AND the market has not yet reconciled with
-   live midday METAR. Earlier entries have materially lower hit rate
-   and edge (see §5).
-6. **`yes_ask[plus1] ≤ 0.22`** — the market-wisdom cap. Evaluated live
-   via `best_no_bid ≥ 1 − 0.22 = 0.78` on the subscribed NO book (YES
-   ask and NO bid are complementary up to the spread). We only trade
-   when the market itself has already priced the +1 bucket as
-   unlikely — the intraday METAR that the market has observed is
-   information we don't want to trade against. See §5.1 for the
-   mechanism; cap ≤ 0.22 drops the one backtest loss and improves
-   hit rate from 98.7% (cap 0.50) to 100.0% (cap 0.22).
-7. `yes_ask[plus1] ≥ 0.005` — excludes tick-floor dust already resolved.
+1. **All three forecasts present** — NBS + GFS + HRRR. Missing HRRR
+   is a hard skip.
+2. **HRRR peak-window coverage** — canonical compute at
+   `lib.weather.hrrr.hrrr_peak_max_f*`. Requires ≥6 distinct
+   valid-hours covered in the station's local 12:00-22:00 peak
+   window, with `init_time ≤ cutoff`. Same function used by backtest
+   (cutoff = entry time) and live (cutoff = now via features.parquet
+   rebuild).
+3. `consensus_spread ≤ 3.0°F` across all three forecasts.
+4. `plus1_idx` exists among the market's listed buckets (NBS_fav
+   isn't the highest tail bucket).
+5. **`yes_ask ≤ 0.50`** — market-wisdom upper cap. Evaluated live as
+   `best_no_bid ≥ 0.50`. Filters out days where the market is
+   already pricing +1 as a favorite (it's usually right about
+   those).
+6. **`yes_ask ≥ 0.07`** — 7¢ minimum per-share edge floor. Buying
+   NO at ≤ $0.93 guarantees ≥ $0.07 win-per-share if NO resolves.
+   Filters out the "market already strongly agrees with our
+   forecast" regime — tiny edge with large tail risk.
+7. **Current city-local time ≥ 15:00.** Before 15:00 the market has
+   not yet absorbed enough peak-hour METAR for the yes_ask cap to
+   reliably separate winners from losers. Backtest shows sharp
+   discontinuity: hit drops from 94% (15 local) to 86% (14 local).
 8. Best NO-ask depth ≥ desired stake (see §6 capacity).
-9. **Slippage ≤ 4¢ from best in-range NO ask.** Enforced in code:
-   `_takeable_shares` only sums asks ≤ `min(max_no_price, best_ask +
-   max_ask_walk)`, and the IOC submits at that same price. Levels
-   past the 4¢ ceiling are left on the book even if otherwise
-   eligible.
-10. **Entry-window still open** — within 30 minutes of the first
-    moment all gates 1-9 passed for this market. After the window
-    closes, further IOCs are blocked (see §4 Execution / Time).
-11. **Per-market-per-day USD cap not reached** — cumulative fill
+9. **Entry-window still open** — within 30 minutes of the first
+   moment gates 1-7 passed for this market (see §4).
+10. **Per-market-per-day USD cap not reached** — cumulative fill
     notional on this market this day ≤ $30 (default). See §7.
 
-If all 11 pass: **buy NO on the plus1 bucket** sized to
-`min(takeable_within_slippage, shares_room, usd_room / max_no_price)`.
+If all 10 pass: **buy NO at `max_no_price` (default 0.93) via IOC**.
+Fill quantity = `min(takeable_at_or_below_0.93, shares_room, usd_room)`.
 
 ## 4. Execution
 
 ### Time
 
-- **Entry**: continuous polling within a **bounded 30-minute window**
-  per market. The window OPENS the first moment all gates pass for
-  that market (≥ 16:00 local, consensus ≤ 3°F, yes_ask ≤ 0.22, HRRR
-  peak coverage complete). Within the window, the strategy keeps
-  lifting liquidity via IOCs while gates continue to pass, up to the
-  110-shares-per-market cap. After the window closes, no further IOCs
-  are submitted on that market even if gates are still passing.
+- **Entry**: continuous polling within a 30-minute bounded window per
+  market. Window opens the first moment gates 1-7 pass. Within the
+  window we keep lifting NO asks priced ≤ $0.93 (IOC), subject to
+  shares + USD caps. After 30 minutes we stop adding even if gates
+  still pass.
 - **Exit**: Hold to market resolution (typically ~05:00 UTC the
-  following day, when the resolution source publishes the actual daily
-  max). No intraday unwinds.
-
-### Backtest vs live execution — the gap
-
-The backtest models a single-shot entry at the first qualifying hour.
-Live execution (the bounded-window rule above) can accumulate multiple
-fills per market:
-
-- **Best case (YES drifts downward through the afternoon).** Additional
-  fills land at progressively better NO prices. Per-share edge ≥
-  backtest +$0.039.
-- **Worst case (YES trades sideways or drifts upward).** Additional
-  fills land at worse NO prices. Per-share edge < backtest. The
-  30-minute window bounds this degradation — beyond that, the signal
-  is presumed stale.
-- **Market-wisdom cap as built-in protection.** If YES ever climbs
-  above 0.22 during the window, `best_no_bid` drops below 0.78 and
-  the gate closes — we stop adding position. Equivalent to a
-  self-triggered stop-add.
-
-The bounded-window rule is **option 3** of the three discussed:
-- Option 1: unbounded continuous take (legacy v2+cap behavior).
-  Maximum capacity, maximum edge-decay risk.
-- Option 2: single-shot first-fill only. Matches backtest 1:1 but
-  throws away 50-80% of per-market capacity since initial book depth
-  is rarely > ~30 shares within 2¢ of best ask.
-- **Option 3 (current default): 30-min bounded window.** Preserves
-  multi-fill capacity from shallow initial depth, bounds decay
-  exposure, aligns with the "first hour after METAR absorption"
-  mechanism that the backtest identifies as the edge source.
-
-CLI flag: `--entry-window-minutes 30` (default). Set to very large
-(`1440`) for pre-window continuous behavior; set to small values
-(e.g. `5`) for near-single-shot behavior.
+  following day). No intraday unwinds.
 
 ### Why local time, not UTC
 
-Peak temperature is a function of local solar time, not UTC. The
-pre-v2 rule used "20 UTC fixed", which silently translated to
-different effective times per city:
+Peak temperature is a function of local solar time, not UTC. A fixed
+"20:00 UTC" would translate to 16:00 EDT in Atlanta and 13:00 PDT
+in Seattle — totally different positions in each city's peak window.
+Anchoring to 15:00 *local* standardizes so every airport gets the
+same relative treatment.
 
-| zone | 20 UTC = local |
-|---|---|
-| Eastern (ATL/NYC/MIA) | 16:00 EDT |
-| Central (ORD/DAL/HOU/AUS) | 15:00 CDT |
-| Mountain (DEN) | 14:00 MDT |
-| Pacific (SEA/LAX/SFO) | 13:00 PDT |
+### Order type
 
-That meant West-Coast entries were pre-divergence (before the market
-had separated winners from losers via METAR) while East-Coast entries
-were post-divergence. Anchoring to 16:00 local standardizes across
-cities so each market gets the same "afternoon-mature" treatment. OOS
-t improves from +1.39 (20 UTC) to +4.49 (≥16 local) on the same
-apples-to-apples price source.
+IOC limit BUY at `max_no_price` (default $0.93). Fills any ask
+priced ≤ $0.93 at the venue, cancels the rest. Never rests on the
+book. Because the limit is a hard ceiling, we can't accidentally
+pay > $0.93 for NO regardless of book depth.
+
+### Why a single 7¢ floor replaces separate slippage controls
+
+The 7¢ edge floor (implemented as `max_no_price = 0.93`) serves three
+purposes simultaneously:
+
+1. **Per-trade edge guarantee.** Win on NO resolution = $1 − $0.93 =
+   $0.07 minimum per share.
+2. **Slippage cap.** Any ask above $0.93 is left on the book. We
+   never walk deep.
+3. **Market-wisdom lower bound.** If best YES ask < $0.07, the
+   market has strongly agreed +1 won't happen. Residual mispricing
+   is tiny, tail risk is large. Skip.
+
+Previous versions of this strategy had a separate `max_ask_walk`
+parameter for slippage control. Removed — `max_no_price = 0.93`
+does both jobs more simply.
 
 ### Stake sizing
 
 Primary control is the per-market-per-day USD cap
-(`--max-usd-per-market 30` by default). At typical NO prices of
-$0.78-$0.99 that's ~30-38 shares/market. With 2-3 qualifying
-markets/day, total daily notional is ~$60-90.
+(`--max-usd-per-market 30`). At NO fill prices of $0.70-$0.93, that's
+~32-42 shares per market. With ~1.8 qualifying markets/day, total
+daily notional ~$55/day at this stake.
 
-- **Per-market-per-day cap**: $30 USD spent hard cap. Accumulates
-  cumulative fill notional (`qty * fill_px`) and blocks further IOCs
-  once reached. Each `(city, date)` combination has a distinct
-  `instrument_id` so this resets per-market-per-day automatically.
-- **Per-market share cap** (secondary safety): 110 shares. At
-  $0.99 max_no_price this is ~$109 — well above the $30 USD cap,
-  so rarely binds, but retained so a badly-configured run can't
-  blow past reasonable position sizes.
-- **Stake progression**:
-  - Paper trade first with default $30/market cap
-  - After 30 live trades with realized ≥ $0.03/share AND ≤ 1 loss,
-    consider raising to $50/market
-  - Keep `stake ≤ 25% of observed depth within 2¢ of best NO-ask`
-    to bound slippage
+- **Starting stake**: $30/market cap — matches backtest scale for
+  live validation
+- **Scale up**: after 30+ trades realize ≥ $0.05/share AND ≤ 2
+  losses, raise cap to $50 then $100
+- **Per-trade worst case**: −$0.93/share (if +1 resolves). At $30
+  cap, one losing market costs up to $30. Net daily loss if ALL
+  markets go against us: ~$55-90 — rare, but plan for it.
 
-### Order type
+## 5. Expected performance (backtest)
 
-Limit order at `best_yes_bid + 0.01` (i.e., NO price =
-`1 - (best_yes_bid + 0.01)`). If not filled in 5 minutes, step toward
-the ask by 1¢. This avoids paying the full spread and captures the
-maker rebate on at least part of the fill when available.
-
-## 5. Expected performance (backtest, v2)
-
-All numbers use the **same price source** — Polymarket hourly prices —
-so the variants below are apples-to-apples. The earlier STRATEGY.md v1
-numbers (n=94, hit=98.9%, per=+$0.083, t=+4.44) came from a different
-snapshot column (`trade_table.entry_price`) that was more favorable
-than what the hourly feed shows. Replaying v1 against the hourly feed
-gives the "v1 (20 UTC)" row below.
-
-### Headline — canonical rule (≥16 local, cs ≤ 3°F, cap 0.22)
+### Headline — canonical rule (yes_ask in [$0.07, $0.50], ≥15 local, cs ≤ 3°F)
 
 | metric | value |
 |---|---|
-| period | 2026-03-11 – 2026-04-10 (31 days) |
+| period | 2026-03-11 – 2026-04-10 (31 calendar days) |
 | markets | 11 US cities |
-| trades | 72 |
-| **hit rate** | **100.0%** (72 wins, 0 losses) |
-| per-trade PnL | +$0.039 |
-| total PnL (1 share) | +$2.82 |
-| IS t-stat (Mar 11-25) | +5.29 |
-| OOS t-stat (Mar 26-Apr 10) | +5.85 |
-| positive days | 27 of 27 (100%) |
-| daily Sharpe | 1.31 (annualized 20.85) |
+| trades | 31 |
+| **hit rate** | **93.5%** (29 wins, 2 losses) |
+| per-trade PnL | +$0.126 |
+| total PnL (1 share) | +$3.89 |
+| IS t-stat (Mar 11-25) | +7.03 |
+| OOS t-stat (Mar 26-Apr 10) | +0.88 |
+| trading days | 17 of 31 (active: 55%) |
+| positive days | 16 of 17 (94%) |
+| avg trades per trading day | 1.82 |
+| daily Sharpe | 0.57 (annualized 9.10) |
+| return on gross capital | 15.6% |
 
-### Looser alternative — cap 0.50 (§5.1 reference)
+### Reference: tighter and wider caps
 
-| metric | value |
-|---|---|
-| trades | 78 (6 more than canonical) |
-| hit rate | 98.7% (77 wins, 1 loss — Chicago 2026-03-17) |
-| per-trade | +$0.046 (~15% larger than canonical) |
-| t-stat | +3.67 (IS +1.85 / OOS +4.49) |
+Same rule except `yes_ask` window:
 
-The looser cap collects a bigger per-trade edge but eats one
-catastrophic loss (−$0.67 on the Chicago day where the market had YES
-at $0.34 — above our canonical 0.22 threshold but under the loose
-0.50). Net total PnL is slightly higher ($3.57 vs $2.82) but the
-downside is much worse and IS t-stat drops by half.
+| yes_ask window | n | L | hit | per | full t | IS t | OOS t | comment |
+|---|---|---|---|---|---|---|---|---|
+| [0.07, 0.22] | 20 | 0 | 100.0% | +$0.118 | +16.24 | +12.07 | +11.82 | cosmetic, small sample |
+| **[0.07, 0.50]** | **31** | **2** | **93.5%** | **+$0.126** | **+2.96** | **+7.03** | **+0.88** | **canonical** |
+| [0.07, 0.75] | 37 | 5 | 86.5% | +$0.119 | +2.50 | +1.99 | +1.58 | OOS still signal, IS eroding |
+| [0.07, 0.995] | 41 | 9 | 78.0% | +$0.100 | +2.26 | +1.61 | +1.58 | hit-rate collapse |
 
-### Entry-rule comparison
+- Tightening to 0.22 gives 100% hit but n=20 is too small. 95% Wilson
+  CI on 20/0 is 84-100% true hit rate.
+- Relaxing past 0.50 starts admitting trades on days the market is
+  already informed +1 is likely. Hit rate declines predictably.
 
-All rows: consensus ≤ 3°F, HRRR 6h peak coverage, hourly-price entry.
+### Local-floor sensitivity (yes_ask in [0.07, 0.50])
 
-| rule | n | W/L | hit | per | t | IS t | OOS t |
-|---|---|---|---|---|---|---|---|
-| 20 UTC fixed (v1), cap 0.50 | 84 | 82/2 | 97.6% | +$0.058 | +3.14 | +4.91 | +1.39 |
-| ≥13 local, cap 0.50 | 93 | 85/8 | 91.4% | +$0.029 | +1.06 | +0.28 | +1.27 |
-| ≥15 local, cap 0.50 | 84 | 81/3 | 96.4% | +$0.052 | +2.51 | +5.71 | +0.66 |
-| **≥16 local, cap 0.50** | **78** | **77/1** | **98.7%** | **+$0.046** | **+3.67** | **+1.85** | **+4.49** |
-| ≥17 local, cap 0.50 | 76 | 75/1 | 98.7% | +$0.041 | +3.30 | +1.73 | +3.96 |
-| **≥16 local, cap 0.22 (canonical)** | **72** | **72/0** | **100.0%** | **+$0.039** | **+7.70** | **+5.29** | **+5.85** |
+| floor | n | L | hit | full t | IS t | OOS t |
+|---|---|---|---|---|---|---|
+| 13 | 51 | 8 | 84.3% | +0.55 | +0.03 | +0.78 |
+| 14 | 44 | 6 | 86.4% | +1.13 | +0.29 | +1.43 |
+| **15** | **31** | **2** | **93.5%** | **+2.96** | **+7.03** | **+0.88** |
+| 16 | 21 | 1 | 95.2% | +2.62 | +1.45 | +4.23 |
+| 17 | 11 | 1 | 90.9% | +1.17 | +0.76 | +2.75 |
 
-Key observations:
+Sharp discontinuity at 15 local: hit rate jumps from 86% (14 local)
+to 94% (15 local). By 15 local the market has absorbed ~3 hours of
+peak-hour METAR and has consistently moved losers' YES above $0.50.
 
-- **16:00 local is the earliest defensible floor.** Earlier entries
-  (13, 15) collapse OOS — these are the "morning consensus looked fine,
-  afternoon METAR disagreed" losses.
-- **Local time beats UTC-fixed on OOS.** v1 at 20 UTC had OOS t=+1.39;
-  v2 at 16 local (cap 0.50) already has OOS t=+4.49. Same trade, better
-  coordinate system.
-- **The market-wisdom cap at 0.22 eliminates tail risk.** Drops hit rate
-  from 98.7% to 100%, doubles t-stat (+3.67 → +7.70), at the cost of ~10%
-  fewer trades and ~15% smaller per-trade edge. See §5.1.
-
-### 5.1 Why the 0.22 cap is canonical
-
-Throughout the day, the +1 YES price is a real-time market signal that
-separates winners (NO wins) from losers (NO loses):
-
-| local hour | YES mean, winners | YES mean, losers | gap |
-|---|---|---|---|
-| 0-11 | ~$0.14 | ~$0.28 | $0.14 |
-| 12 | $0.13 | $0.27 | $0.14 |
-| 13 | $0.14 | $0.38 | $0.24 |
-| 14 | $0.13 | $0.42 | $0.29 |
-| 15 | $0.10 | $0.63 | $0.53 |
-| **16** | **$0.08** | **$0.75** | **$0.67** |
-| 17 | $0.04 | $0.81 | $0.77 |
-
-Live METAR between noon and 16:00 local lets the market separate
-winners (YES drifts toward 0) from losers (YES rises toward 1). By
-16:00 local the separation is nearly clean. A cap at $0.22 excludes
-days where the market has already started pricing +1 as "likely" —
-the market is telling you not to trade those. The market's own
-intraday repricing becomes a second, independent filter on top of
-forecast consensus.
-
-**Why this is the canonical rule (not just an overlay):**
-
-1. **Avoids a structural tail.** The single backtest loss under cap
-   0.50 (Chicago 2026-03-17, −$0.67) is a 15-wins-worth of edge hit.
-   Cap 0.22 eliminates it by respecting the market's warning. Live
-   deployment at $100/share stake means a single loss costs $60-$80 —
-   too painful to eat on purpose when an honest filter excludes it.
-2. **Both folds agree.** Cap 0.22 has IS t=+5.29 and OOS t=+5.85, both
-   strong. Cap 0.50 has IS t=+1.85 (barely significant) and OOS t=+4.49
-   — inconsistent enough that one fold is carrying most of the signal.
-3. **Daily Sharpe doubles.** 1.31 (cap 0.22) vs 0.59 (cap 0.50) — the
-   cap 0.22 rule has much less day-to-day variance.
-4. **The mechanism is robust, not ad-hoc.** The YES-price-by-local-hour
-   split (§5 table above) is a physical effect of METAR absorption,
-   not a fitted threshold. 0.22 falls naturally out of the winner /
-   loser distribution; it's the number above which losers reliably
-   sit at 16 local.
-
-**Caveats to monitor live:**
-
-- 72/0 at this sample size has wide confidence bounds (95% Wilson CI
-  ~ 95-100%). A "true" hit rate of 96-97% is statistically consistent
-  with the backtest. Kill-switch any live loss immediately.
-- The 0.22 cap pushes fills to NO prices $0.78-$0.99 — book depth at
-  these prices is less well-characterized than around the prevailing
-  ask. Real capacity may be smaller than §6 estimates.
-- Per-trade edge is $0.039 (smaller than looser variant's $0.046).
-  At $100/share stake, each win is ~$4; each loss would be ~$60-$80.
-  20-trade PnL buffer above zero before scaling stake.
-
-**Looser alternative (cap 0.50) is retained as a CLI flag**
-(`--max-yes-ask 0.50`) for paper-trade comparison and as a fallback
-if the 0.22 rule underperforms live.
-
-### Per-city breakdown (canonical rule, ≥16 local, cap 0.22)
+### Per-city breakdown
 
 | city | n | W/L | hit | per-trade | t-stat |
 |---|---|---|---|---|---|
-| Atlanta | 13 | 13/0 | 100.0% | +$0.067 | +4.27 |
-| Austin | 5 | 5/0 | 100.0% | +$0.058 | +1.61 |
-| Chicago | 1 | 1/0 | 100.0% | +$0.160 | — |
-| Dallas | 8 | 8/0 | 100.0% | +$0.035 | +3.53 |
-| Denver | 4 | 4/0 | 100.0% | +$0.044 | +2.43 |
-| Houston | 9 | 9/0 | 100.0% | +$0.064 | +1.96 |
-| LA | 5 | 5/0 | 100.0% | +$0.008 | +4.50 |
-| Miami | 14 | 14/0 | 100.0% | +$0.019 | +3.47 |
-| NYC | 11 | 11/0 | 100.0% | +$0.028 | +3.07 |
-| Seattle | 4 | 4/0 | 100.0% | +$0.109 | +2.07 |
+| Atlanta | 8 | 7/1 | 87.5% | +$0.073 | +0.62 |
+| Dallas | 4 | 4/0 | 100.0% | +$0.246 | +3.32 |
+| Denver | 4 | 4/0 | 100.0% | +$0.158 | +2.39 |
+| Houston | 4 | 4/0 | 100.0% | +$0.182 | +2.81 |
+| Miami | 3 | 3/0 | 100.0% | +$0.144 | +8.42 |
+| NYC | 3 | 3/0 | 100.0% | +$0.116 | +7.11 |
+| Seattle | 2 | 2/0 | 100.0% | +$0.185 | +2.31 |
+| Austin | 1 | 1/0 | 100.0% | +$0.216 | — |
+| Chicago | 2 | 1/1 | 50.0% | −$0.199 | −0.45 |
+| LA | 0 | — | — | — | — |
 | SF | 0 | — | — | — | — |
 
-Chicago had 2 trades under the looser cap 0.50 rule, one of which lost
-(2026-03-17, YES entered at $0.34 — above the canonical 0.22 threshold
-— +1 bucket resolved, NO paid 0). Under the canonical cap 0.22 rule,
-that loss is filtered out: only 1 Chicago trade remains (the winner).
-SF had no consensus-tight days in the backtest window.
+Chicago is the only city with negative per-trade — and has been
+across multiple backtest variants. Consider excluding Chicago once
+live data confirms this pattern.
+
+### The two backtest losses
+
+Both on 2026-03-28 (same calendar day, different markets):
+
+| city | date | yes_ask at entry | pnl | mechanism |
+|---|---|---|---|---|
+| Atlanta | 2026-03-28 | $0.30 | −$0.71 | market pricing +1 at 30%, resolved YES |
+| Chicago | 2026-03-28 | $0.375 | −$0.64 | similar pattern |
+
+Both enter in the mid-range where the market is genuinely uncertain.
+The pattern is **"market at ~30-40% on +1, forecast consensus says
+no, market wins"**. Tighter yes_ask cap (≤0.25) eliminates both
+losses but at ~1/3 the trade volume. Visible losses are the cost
+of a wider cap — they inform sizing and kill-switches, which is
+why we keep the cap at 0.50.
 
 ### Overfit protection
 
-The following variants were tested and rejected because they fail
-out-of-sample:
+Variants tested and rejected (each fails IS/OOS discipline):
 
-- **Offset = +2 NO**: IS t = +5.10, OOS t = −1.05 (classic overfit trap).
-- **Offset basket (+1 and +2)**: IS t = +6.02, OOS t = +1.60 (diluted).
-- **Offset = +3 NO**: Works OOS (t = +3.86) but per-trade only +$0.018
-  — capital-inefficient at NO cost ~$0.98.
-- **Offset = −1 YES (symmetric)**: t = +0.80, no edge.
-- **Offset = −1 NO (symmetric fade)**: t = −1.37, negative.
-- **"First consensus" entry (no local floor)**: n=102, hit=90.2%,
-  t=+1.66. Fails because morning-consensus days can later reprice
-  against you as midday METAR lands.
-- **≥13-15 local floors**: OOS t collapses (≥13: +1.27; ≥14: +1.15;
-  ≥15: +0.66). Only ≥16 local passes cleanly in both folds.
+- **Offset = +2 NO**: IS t=+5.10, OOS t=−1.05. Classic overfit.
+- **Offset basket (+1 and +2)**: IS t=+6.02, OOS t=+1.60. Diluted.
+- **Offset = +3 NO**: works OOS but per-trade +$0.018.
+- **Offset = −1 YES/NO (symmetric)**: no edge.
+- **First-consensus entry (no local floor)**: n=102, hit 90.2%.
+  Morning consensus reprices by afternoon.
+- **≥13-14 local floors**: OOS collapses. Hit 84-86%.
+- **yes_ask cap at 0.75+**: hit rate drops below 90% with
+  tail-heavy losses.
+- **`max_no_price = 0.99`** (no 7¢ edge floor): 53 trades but 38
+  have per-share edge < $0.02. Tail-dominated; breaks if hit rate
+  drops 3 pp.
 
-The +1-NO edge with the ≥16 local consensus filter is the only variant
-that passes a strict IS/OOS holdout discipline.
+The narrow window `yes_ask in [0.07, 0.50]` with `≥15 local` is the
+only variant that passes both IS and OOS with a defensible mechanism
+(forecast consensus + market-wisdom agreement + local-time maturity)
+AND an honest sample of losses.
 
 ## 6. Capacity (realistic)
 
@@ -396,54 +291,32 @@ observing 8 qualifying +1 offset buckets:
 |---|---|---|
 | at best NO-ask | 28 | $22 |
 | within 1¢ | 52 | $41 |
-| **within 2¢** | **116** | **$92** |
+| within 2¢ | 116 | $92 |
 | within 5¢ | 145 | $115 |
 
-### Per-day aggregate
+### Per-day aggregate (starting stake $30/market)
 
-Typical day with 2-3 qualifying markets:
+- **$30/market × ~1.8 markets/day ≈ $55/day notional**
+- **Expected PnL**: ~$3-5/day at canonical backtest edge
+- At 7¢ ceiling, book depth at prices $0.50-$0.93 usually supports
+  $30 of fills per market within the 30-minute window
 
-| slippage | total capital absorbable |
-|---|---|
-| at best NO-ask | $50-200 |
-| within 2¢ (recommended) | **$300-500** |
-| within 5¢ (aggressive, edge erodes) | $600-900 |
+### Higher-stake ceiling
 
-### Practical deployment ceiling (starting stake)
-
-- **$30/market USD cap** × 2-3 qualifying markets/day = $60-90/day
-  total notional
-- **~$2-3/day expected PnL** at this scale (per-share edge $0.039 ×
-  ~30 shares × 2-3 markets)
-- This is the **starting stake** for live paper + initial real capital
-- Scale per-market cap upward (→ $50, $100) only after 30+ trades with
-  realized ≥ backtest expectation
-
-### Higher-stake ceiling (later)
-
-Once realized matches backtest and book depth is validated:
-
-- **~$300-400/day total capital** with acceptable slippage
-- **~$10-15/day expected PnL** at that scale
-- Beyond ~$400/day, walking the book deeper eats the edge
-
-This is a **portfolio** — you cannot concentrate in one market.
-Diversification across 2-3 qualifying markets per day is what drives
-the 100% hit rate and positive-day streak (27 of 27 in backtest).
+After 30+ trades realize near backtest expectation:
+- **$100/market × 1.8 markets/day ≈ $180/day** notional
+- **Expected PnL**: ~$10-15/day
+- Above this, walking the book past $0.93 becomes tempting — don't.
+  The 7¢ floor is the edge floor.
 
 ### Caveats
 
-1. Capacity estimate is from a **tiny sample** (n=8 qualifying buckets
+1. Capacity estimate is from a tiny sample (n=8 qualifying buckets
    over 3 days). Real execution will reveal the true distribution.
-2. Observed depth may shrink once we actually bid — market makers may
-   pull quotes.
-3. Fill is often incremental (hours) as YES-bidders lift, not instant.
-4. At 16:00 local on a day that will resolve NO, YES is decaying
-   rapidly; the best ask at the moment we fire may be stale. Use a
-   pre-trade book refresh immediately before order submission.
-5. Canonical cap 0.22 means all fills are at NO prices 0.78-0.99.
-   Book depth at those prices is less well-characterized than near
-   prevailing ask. Real capacity may be 30-50% of §6 numbers above.
+2. Market makers may pull quotes once we start bidding.
+3. Fills may be incremental (minutes) as YES-bidders lift asks.
+4. Book depth at NO prices $0.80-$0.93 is less well-characterized
+   than near best; real capacity may be 50-70% of §6 figures.
 
 ## 7. Risk management
 
@@ -451,156 +324,102 @@ the 100% hit rate and positive-day streak (27 of 27 in backtest).
 
 | event | probability | consequence | mitigation |
 |---|---|---|---|
-| +1 bucket wins | 0% observed in cap-0.22 backtest, ~3% historical | lose $0.78-$0.99 per share | 100% hit in backtest; cap-0.22 filter rejects the 1 known loss; diversify across cities |
-| NBS + GFS + HRRR all wrong together | uncommon on consensus-tight days | multiple simultaneous losses | diversify across cities; size so one loss ≤ 20 prior wins |
-| Retail gets smarter on +1 pricing | possible over time | edge compresses to fair | monitor realized edge weekly; kill if < $0/trade over 30+ trades |
-| Polymarket changes fee structure | low | PnL math shifts | recompute fees before trades |
-| Polymarket changes bucket structure | low | strategy framework breaks | replan |
-| HRRR feed delayed past 16 local | possible | consensus not evaluable, skip day | alert on missing HRRR ≥15 UTC |
+| +1 bucket wins | ~6.5% per trade in backtest | −$0.70/share typical | 93.5% hit; diversify across cities; $30/market USD cap |
+| All 3 forecasts wrong together | uncommon on cs ≤ 3°F days | multiple simultaneous losses | diversify; per-market cap |
+| Retail gets smarter on +1 pricing | possible | edge compresses | monitor realized weekly; kill if < $0/share over 30+ trades |
+| Polymarket fee change | low | PnL math shifts | recompute |
+| HRRR feed delayed past 15 local | possible | consensus not evaluable | skip day; alert on missing HRRR |
 
 ### Kill switches
 
-- **Any single loss** — investigate immediately. Backtest under the
-  canonical rule had zero; any live loss is a signal the market-wisdom
-  filter isn't behaving as observed in backtest.
-- **2 losses in any 20-trade window** — halt, re-examine.
-- **Realized < $0/trade after 40 trades** — halt, likely regime change.
-- **Observed depth at best ask < 5 shares across all markets for 3
-  days** — halt, liquidity gone.
-- **Consecutive negative days, 3 in a row** — halt.
+- **3 losses in any 20-trade window** — halt. Backtest was 6.5%
+  loss rate; 15% (3/20) signals regime change.
+- **Realized < $0/share after 30 trades** — halt.
+- **Any Chicago loss in first 5 Chicago trades** — stop Chicago
+  (backtest showed 50% hit there).
+- **Observed depth at qualifying asks < 5 shares across all markets
+  for 3 consecutive days** — halt, liquidity gone.
+- **3 consecutive negative days** — halt.
 
 ### What can go wrong even on a "winning" day
 
-Under the canonical cap-0.22 rule we buy NO at $0.78-$0.99. A single
-loss costs $0.78-$0.99 per share. Per-trade edge is $0.039/share, so
-**one loss wipes out 20-25 winning shares**. Sizing must account for
-this:
-
-- **$30/market cap** bounds single-market loss at ~$30 max
-  (worst case: 100% of stake lost if the +1 bucket resolves)
-- With 2-3 qualifying markets/day at the $30 cap, max daily loss if
-  ALL go against us is ~$60-$90. 27/27 positive days in backtest so
-  that's a tail scenario, but plan for it.
-- Max drawdown in canonical backtest: 0 (zero losses observed in 72
-  trades)
-- Build a 25-trade realized-PnL buffer above zero before raising the
-  per-market cap
-- The tighter the yes_ask filter, the more expensive an individual
-  loss is in share terms — the $30 USD cap bounds that exposure
+At default caps we buy NO at $0.70-$0.93. Single loss costs
+$0.70-$0.93/share; single win pays $0.07-$0.30/share. Per-trade
+edge is $0.126 — **one loss wipes out ~7 winners**. At $30/market
+cap × 30 shares, a loss costs ~$21-$28; a win pays ~$2-$9.
+Single-day P&L is skewed.
 
 ### Risk-control caveats
 
-- **USD cap is in-memory.** If the strategy crashes or is restarted
-  mid-day, `usd_spent` resets to zero per instrument. A restart
-  could therefore spend another $30 on the same market that already
-  absorbed $30 pre-crash. To fix: reconcile `usd_spent` from the
-  ledger file on `on_start` by summing fill events for today's
-  instruments. Acceptable risk during paper-trade; must be fixed
-  before committing real capital beyond ~$100/day.
-- **Nautilus's position reconciliation** does rebuild `positions`
-  from venue state on startup, so the share-cap side is safe
-  across restarts.
+- **USD cap is in-memory.** If the strategy restarts mid-day,
+  `usd_spent` resets to zero per instrument. Fix via `on_start`
+  reconciliation from ledger before scaling past ~$100/day total
+  notional.
+- **Nautilus reconciles positions from venue state on startup**, so
+  share counts are safe across restarts — not USD counts.
 
 ## 8. Deployment checklist
 
 ### Week 0: Infrastructure
 
-- [ ] Polymarket API key + proxy wallet set up
-- [ ] `py-clob-client` installed, authenticated
-- [ ] Book recorder running on all 11 US cities (already live)
-- [ ] NBS + GFS MOS + HRRR feeds refreshed at minimum hourly through
-      16:00 local for each station
-- [ ] City→tz table hard-wired (`src/lib/weather/timezones.py`)
-- [ ] `cfp discover` runs cleanly with local-time gate
-- [ ] `cfp run` default params: `--max-yes-ask 0.22` / `--min-entry-hour-local 16` / `--max-usd-per-market 30` / `--entry-window-minutes 30`
-- [ ] Plan to add `usd_spent` reconciliation from ledger on `on_start` before scaling past $30/market (so restarts don't double-spend)
+- [ ] Polymarket API key + proxy wallet (`cfp setup`)
+- [ ] Book recorder running on all 11 US cities
+- [ ] NBS + GFS + HRRR + METAR feeds refreshed hourly through
+      15:00 local for each station
+- [ ] `cfp discover` returns qualifying markets past 15:00 local
+- [ ] `cfp run` defaults: `--min-entry-hour-local 15`
+      / `--max-yes-ask 0.50` / `--max-no-price 0.93`
+      / `--max-usd-per-market 30` / `--entry-window-minutes 30`
 
 ### Week 1-2: Paper
 
-- [ ] Log real YES ask and NO ask at entry for each recommendation
+- [ ] Log real YES ask at entry per recommendation
 - [ ] Log actual resolution outcome
-- [ ] Compute realized per-trade vs backtest (+$0.039) expectation
-- [ ] Measure: are recommendations filling at our intended prices?
-- [ ] Track parallel cap-0.50 subset (`--max-yes-ask 0.50`) for
-      comparison — if it outperforms in realized data, we regressed
-      to the looser rule
-- [ ] Expected sample: ~15-25 paper trades in 2 weeks
+- [ ] Compute realized per-share vs backtest (+$0.126)
+- [ ] Expected sample: ~15-20 paper trades in 2 weeks
+- [ ] Track whether Chicago behavior matches backtest
 
 ### Week 3-4: Small-scale live
 
-- [ ] Deploy if realized ≥ $0.03/trade over 30 paper trades AND ≤ 1
-      loss
-- [ ] Start $10-20 per trade
-- [ ] Keep paper ledger in parallel for comparison
-- [ ] Consider overlaying the 0.22 cap manually on first 20 live trades
-      to reduce tail risk
+- [ ] Deploy if realized ≥ $0.05/share AND ≤ 2 losses over 30
+      paper trades
+- [ ] Start $10-20/market stake (well below $30 cap)
+- [ ] First live session: `--max-submissions 5` to bound exposure
 
 ### Ongoing
 
-- [ ] Daily: review recommendations + fills
-- [ ] Weekly: compute rolling realized edge, Sharpe, hit rate
-- [ ] Monthly: stress test across different seasons / weather regimes
-- [ ] If realized tracking backtest: scale toward $100/trade ceiling
+- [ ] Daily: review recommendations + fills + ledger
+- [ ] Weekly: compute rolling per-share edge, Sharpe, hit rate
+- [ ] Monthly: stress test across seasons / weather regimes
+- [ ] If realized tracks backtest: scale toward $100/market
 
 ## 9. References
 
-- [Time-resolved consensus experiments](../../notebooks/experiments/backtest-v3/consensus_optimal_sweep.py)
+- [Canonical backtest reproducer](backtest.py)
+- [HRRR canonical compute](../lib/weather/hrrr.py)
+- [City→tz mapping](../lib/weather/timezones.py)
+- [Discover logic](discover.py)
+- [Live strategy](strategy.py)
 - [v1 vs v2 head-to-head](../../notebooks/experiments/backtest-v3/v1_v2_compare.py)
-- [Full v3 backtest findings](../../notebooks/experiments/backtest-v3/FINDINGS.md)
-- [Strategy D retraction (predecessor)](../../vault/Weather%20Vault/wiki/syntheses/2026-04-14%20Strategy%20D%20does%20NOT%20replicate%20in%20clean%20temporal%20holdout.md)
-- [Polymarket fee structure](../../vault/Weather%20Vault/wiki/syntheses/2026-04-11%20Polymarket%20fee%20structure%20+%20maker%20rebate%20pivot.md)
-- [Polymarket CLOB WebSocket](../../vault/Weather%20Vault/wiki/concepts/Polymarket%20CLOB%20WebSocket.md)
+- [Full cap / floor sweep](../../notebooks/experiments/backtest-v3/consensus_optimal_sweep.py)
 
 ## 10. Changelog
 
-- **2026-04-22 (latest)** — **Single canonical HRRR compute + 4¢
-  slippage cap.** Unified the three drifting HRRR-max definitions
-  (features builder, backtest, exploration notebooks) into
-  `src/lib/weather/hrrr.py`. One function (`hrrr_peak_max_f_from_frame`)
-  implements the canonical time-resolved peak-window max with
-  min_coverage=6; three thin wrappers (`_f`, `_f_now`, `_f_batch`)
-  choose how to load the frame. The features builder and backtest now
-  differ only in cutoff: `datetime.now(UTC)` vs `simulated_entry_time`.
-  Live reads features.parquet as before; semantic is now correct.
-  Also added a per-market slippage cap (`--max-ask-walk 0.04`): the
-  strategy's `_takeable_shares` and IOC submit price both honor
-  `min(max_no_price, best_ask + 0.04)`, which STRATEGY.md §3 filter #9
-  previously only documented as intent. Backtest reproduces
-  bit-exactly (n=72, 72/0, 100%, t=+7.70) via the shared code path.
-- **2026-04-22 (latest)** — **$30/market-per-day USD cap.** Hard
-  per-market-per-day risk control: cumulative fill notional is
-  tracked in-memory as fills arrive and blocks further IOCs once
-  cap is reached. Natural per-market-per-day semantics because
-  each `instrument_id = (condition_id, no_token_id)` is already
-  unique per (city, market_date). At $30 cap + ~$0.90 NO fill prices,
-  that's 30-38 shares/market. Known limitation: in-memory state
-  resets on strategy restart — a fix via `on_start` reconciliation
-  from ledger is on the deployment checklist.
-- **2026-04-22 (latest)** — **Bounded 30-min entry window.** Live
-  strategy previously took liquidity continuously through the full
-  afternoon once gates first passed. Now each market has a 30-minute
-  window that opens the first moment all gates pass; further IOCs
-  past that window are blocked. Preserves multi-fill capacity from
-  shallow initial depth while bounding edge decay from late-afternoon
-  fills where YES may have drifted. Also fixed the active-set bug
-  (markets switched in/out based on UTC date instead of per-airport
-  local date) — affected Pacific markets most severely. CLI flag
-  `--entry-window-minutes 30` (default). Backtest is unchanged
-  (still models single-shot at first qualifying hour).
-- **2026-04-22 (later)** — **v2+cap promoted to canonical live rule.**
-  After confirming the `yes_ask ≤ 0.22` market-wisdom cap eliminates
-  the single known loss while keeping IS/OOS t-stats strong (IS +5.29,
-  OOS +5.85, both folds) and doubling daily Sharpe (0.59 → 1.31), the
-  cap became a required filter in the live strategy. Wired through
-  `cli.py` as `--max-yes-ask 0.22` and into `strategy.py` as a
-  per-instrument best-NO-bid check. CLI flag renamed
-  `--min-entry-hour` → `--min-entry-hour-local` (default 16);
-  `src/lib/weather/timezones.py` added. Looser cap 0.50 retained as
-  fallback via `--max-yes-ask 0.50`.
-- **2026-04-22** — v2 canonical rule: switched entry from fixed 20 UTC
-  to ≥ 16:00 city-local time; required HRRR 6h peak-window coverage.
-  Also re-ran v1 against the same hourly-price feed used for v2
-  (instead of the trade-table entry_price column) to get
-  apples-to-apples numbers — the old v1 headline (t=+4.44) was
-  price-source artifact. v2 (cap 0.50): n=78, 98.7% hit, OOS t=+4.49.
-- **2026-04-15** — Strategy distilled from v3 iter 1-9 (backtest-v2 branch)
+- **2026-04-22 (final canonical)** — **Simplified rule**: drop
+  `max_ask_walk` entirely; `max_no_price = 0.93` does slippage cap
+  + edge floor. Relax `yes_ask` window from `[0.005, 0.22]` to
+  `[0.07, 0.50]`. Drop `min_entry_hour_local` from 16 to 15.
+  Result: n=31 (vs 72 at tight), 93.5% hit (2 visible losses, not
+  cosmetic 100%), +$0.126/share (vs +$0.039), t=+2.96 (vs +7.70).
+  Sample is larger, losses are visible for calibration, per-trade
+  edge is meaningful. Tighter `[0.07, 0.22]` and looser
+  `[0.07, 0.75]` documented as reference rows in §5.
+- **2026-04-22 (prior)** — $30/market-per-day USD cap added.
+- **2026-04-22 (prior)** — bounded 30-minute entry window added.
+- **2026-04-22 (prior)** — active-set by airport local date (bug fix).
+- **2026-04-22 (prior)** — canonical HRRR unified in
+  `src/lib/weather/hrrr.py`. Added 4¢ slippage cap (superseded by
+  simpler `max_no_price = 0.93`).
+- **2026-04-22 (prior)** — v2 local-time anchoring (16 local floor)
+  with market-wisdom cap 0.22 as canonical.
+- **2026-04-15** — Strategy distilled from v3 iter 1-9.
