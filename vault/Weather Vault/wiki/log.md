@@ -124,3 +124,15 @@
 - Watch out for: chain_id=POLYGON (not Amoy default), neg_risk=True for weather, US IP geoblock.
 - Related: [[Polymarket]], [[Polymarket CLOB WebSocket]]
 
+
+## [2026-04-22] synthesis | Consensus-Fade v2 local-time anchoring
+
+Rewrote Consensus-Fade +1 from "20 UTC fixed" to "≥16:00 city-local".
+Caught a v1 price-source bug — old headline (n=94 / 98.9% / t=+4.44)
+used `trade_table.entry_price`; hourly-prices replay gives n=84 / 97.6%
+/ t=+3.14. Same price source across variants now. Canonical v2:
+n=78 / 98.7% / +$0.046 / IS t=+1.85 / OOS t=+4.49. The 0.22-cap overlay
+(100% hit, t=+7.70) documented as optional tightening in STRATEGY.md §5.1,
+NOT canonical — 72/0 is statistically indistinguishable from 77/1.
+Updated: `src/consensus_fade_plus1/STRATEGY.md`, `backtest.py`. Added
+synthesis: [[2026-04-22 Consensus-Fade v2 local-time anchoring]].

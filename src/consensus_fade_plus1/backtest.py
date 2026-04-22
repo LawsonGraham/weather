@@ -1,20 +1,23 @@
-"""Consensus-Fade +1 Offset — Backtest reproducer.
+"""Consensus-Fade +1 Offset — Canonical backtest reproducer (v2).
 
-Runs the backtest exactly as described in STRATEGY.md §5. Outputs the
-headline stats, IS/OOS split, consensus-threshold sweep, and per-city
-breakdown.
+Runs the canonical rule from STRATEGY.md §3:
+    - All three forecasts present (NBS + GFS MOS + HRRR)
+    - HRRR fxx=6 covers ≥ 6 of the 11 hours in local 12-22 peak window
+    - consensus_spread ≤ 3.0°F
+    - Entry time ≥ 16:00 city-local
+    - 0.005 ≤ yes_ask ≤ 0.50
 
-Data requirements (must already exist in data/processed/):
-- data/processed/backtest_v3/features.parquet  (per-station daily
-  NBS/GFS/HRRR/METAR features, via notebooks/experiments/backtest-v3/
-  build_features.py)
-- data/processed/backtest_v2/trade_table.parquet  (per-slug market +
-  resolution data, via notebooks/experiments/backtest-v2/harness.py)
+Outputs the headline stats, IS/OOS split, per-city breakdown, and an
+"optional 0.22-cap overlay" comparison row (see STRATEGY.md §5.1).
 
-If these are missing, regenerate them from the source scripts.
+Data requirements:
+    data/processed/backtest_v2/trade_table.parquet
+    data/processed/iem_mos/{NBS,GFS}/*.parquet
+    data/raw/hrrr/K<station>/hourly.parquet
+    data/processed/polymarket_prices_history/hourly/year=2026/month=*/data_0.parquet
 
 Usage:
-    uv run python strategies/consensus_fade_plus1/backtest.py
+    uv run python src/consensus_fade_plus1/backtest.py
 """
 from __future__ import annotations
 
@@ -23,28 +26,34 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
 
-CITY_TO_STATION = {
-    "New York City": "LGA", "Atlanta": "ATL", "Dallas": "DAL",
-    "Seattle": "SEA", "Chicago": "ORD", "Miami": "MIA",
-    "Austin": "AUS", "Houston": "HOU", "Denver": "DEN",
-    "Los Angeles": "LAX", "San Francisco": "SFO",
+TZ = {
+    "LGA": "America/New_York", "ATL": "America/New_York", "MIA": "America/New_York",
+    "ORD": "America/Chicago", "DAL": "America/Chicago", "HOU": "America/Chicago",
+    "AUS": "America/Chicago", "DEN": "America/Denver",
+    "SEA": "America/Los_Angeles", "LAX": "America/Los_Angeles", "SFO": "America/Los_Angeles",
 }
-FEE_RATE = 0.05  # Polymarket weather fee formula: C × 0.05 × p × (1-p)
+CITY_TO_STATION = {
+    "New York City": "LGA", "Atlanta": "ATL", "Dallas": "DAL", "Seattle": "SEA",
+    "Chicago": "ORD", "Miami": "MIA", "Austin": "AUS", "Houston": "HOU",
+    "Denver": "DEN", "Los Angeles": "LAX", "San Francisco": "SFO",
+}
+FEE_RATE = 0.05
 
-# Strategy parameters (pre-registered, from backtest v3 iter 7-8)
+# Canonical parameters (§3 of STRATEGY.md)
 CONSENSUS_MAX_F = 3.0
-OFFSET = 1  # NBS_fav + 1
-SIDE = "NO"  # buy NO (fade)
+OFFSET = 1
 YES_PRICE_MIN = 0.005
-YES_PRICE_MAX = 0.5
+YES_PRICE_MAX = 0.50        # canonical cap; §5.1 also tests 0.22 overlay
+LOCAL_FLOOR_HOUR = 16       # 16:00 city-local
+HRRR_MIN_PEAK_COV = 6       # distinct valid-hours in 12-22 local
 
-# Fold split for in-sample / out-of-sample reporting (strategy discovery
-# used Mar 11-25 IS, Mar 26-Apr 10 OOS)
+# IS / OOS fold boundaries (pre-registered)
 IS_START = date(2026, 3, 11)
 IS_END = date(2026, 3, 25)
 OOS_START = date(2026, 3, 26)
@@ -52,163 +61,222 @@ OOS_END = date(2026, 4, 10)
 
 
 @dataclass
-class TradeStats:
+class Stats:
     n: int
-    hit_rate: float
-    per_trade_pnl: float
-    total_pnl: float
-    std_pnl: float
-    t_stat: float
+    wins: int
+    losses: int
+    hit: float
+    per_trade: float
+    total: float
+    t: float
 
 
-def summarize(trades: pd.DataFrame) -> TradeStats:
-    n = len(trades)
+def summarize(df: pd.DataFrame) -> Stats:
+    n = len(df)
     if n == 0:
-        return TradeStats(0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    hit = float(trades["won_no"].mean())
-    per = float(trades["pnl"].mean())
-    total = float(trades["pnl"].sum())
-    std = float(trades["pnl"].std(ddof=1)) if n > 1 else 0.0
-    t = per / (std / n**0.5) if std > 0 else 0.0
-    return TradeStats(n, hit, per, total, std, t)
+        return Stats(0, 0, 0, 0.0, 0.0, 0.0, 0.0)
+    wins = int(df.won_no.sum())
+    losses = n - wins
+    hit = float(df.won_no.mean())
+    per = float(df.pnl.mean())
+    total = float(df.pnl.sum())
+    sd = float(df.pnl.std(ddof=1)) if n > 1 else 0.0
+    t = per / (sd / n ** 0.5) if sd > 0 else 0.0
+    return Stats(n, wins, losses, hit, per, total, t)
 
 
-def load_data() -> pd.DataFrame:
-    """Join features + trade table; compute consensus spread."""
-    feat_path = REPO / "data" / "processed" / "backtest_v3" / "features.parquet"
-    tbl_path = REPO / "data" / "processed" / "backtest_v2" / "trade_table.parquet"
-    if not feat_path.exists() or not tbl_path.exists():
-        sys.exit(
-            "Missing data. Run:\n"
-            "  uv run python notebooks/experiments/backtest-v2/harness.py\n"
-            "  uv run python notebooks/experiments/backtest-v3/build_features.py"
-        )
-    feat = pd.read_parquet(feat_path)
-    feat["local_date"] = pd.to_datetime(feat["local_date"])
-    feat = feat.dropna(subset=["nbs_pred_max_f", "gfs_pred_max_f", "hrrr_max_t_f"])
-    feat["consensus_spread"] = (
-        feat[["nbs_pred_max_f", "gfs_pred_max_f", "hrrr_max_t_f"]].max(axis=1)
-        - feat[["nbs_pred_max_f", "gfs_pred_max_f", "hrrr_max_t_f"]].min(axis=1)
-    )
-    station_to_city = {v: k for k, v in CITY_TO_STATION.items()}
-    feat["city"] = feat["station"].map(station_to_city)
-    feat = feat.dropna(subset=["city"])
-
-    tbl = pd.read_parquet(tbl_path)
-    tbl = tbl.dropna(subset=["entry_price"])
-    tbl = tbl[tbl["won_yes"] >= 0]
-    tbl["market_date"] = pd.to_datetime(tbl["market_date"])
-    tbl["date"] = tbl["market_date"].dt.date
-
-    # Drop pre-existing consensus_spread from tbl to avoid collision
-    for c in ("consensus_spread", "nbs_pred_max_f_f"):
-        if c in tbl.columns:
-            tbl = tbl.drop(columns=[c])
-
-    tbl = tbl.merge(
-        feat[["city", "local_date", "consensus_spread", "nbs_pred_max_f"]]
-        .rename(columns={"local_date": "market_date"}),
-        on=["city", "market_date"], how="left",
-        suffixes=("", "_feat"),
-    )
-    tbl = tbl.dropna(subset=["consensus_spread", "nbs_pred_max_f"])
-    tbl = tbl[(tbl.date >= IS_START) & (tbl.date <= OOS_END)].copy()
-    return tbl
+def _mos(model: str) -> pd.DataFrame:
+    con = duckdb.connect()
+    col = "txn_f" if model == "NBS" else "n_x_f"
+    df = con.execute(f"""
+        SELECT station, runtime, ftime, {col} AS n_x_f
+        FROM read_parquet('{REPO}/data/processed/iem_mos/{model}/*.parquet')
+        WHERE {col} IS NOT NULL
+    """).df()
+    df["runtime"] = pd.to_datetime(df["runtime"], utc=True)
+    df["ftime"] = pd.to_datetime(df["ftime"], utc=True)
+    df["station"] = df["station"].str.removeprefix("K")
+    return df
 
 
-def run_strategy(df: pd.DataFrame, consensus_max: float,
-                 offset: int, side: str = "NO",
+def _hrrr() -> pd.DataFrame:
+    con = duckdb.connect()
+    rows = []
+    for st in TZ:
+        try:
+            sub = con.execute(f"""
+                SELECT init_time, valid_time, t2m_heightAboveGround_2 AS t_k
+                FROM read_parquet('{REPO}/data/raw/hrrr/K{st}/hourly.parquet')
+                WHERE t2m_heightAboveGround_2 IS NOT NULL
+            """).df()
+        except Exception:
+            continue
+        sub["station"] = st
+        sub["init_time"] = pd.to_datetime(sub["init_time"], utc=True)
+        sub["valid_time"] = pd.to_datetime(sub["valid_time"], utc=True)
+        sub["t_f"] = (sub["t_k"] - 273.15) * 9 / 5 + 32
+        rows.append(sub[["station", "init_time", "valid_time", "t_f"]])
+    return pd.concat(rows, ignore_index=True)
+
+
+def _prices() -> pd.DataFrame:
+    con = duckdb.connect()
+    df = con.execute(f"""
+        SELECT slug, timestamp, p_yes
+        FROM read_parquet('{REPO}/data/processed/polymarket_prices_history/hourly/year=2026/month=*/data_0.parquet')
+    """).df()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return df
+
+
+def _nbs_gfs_as_of(sub: pd.DataFrame, t: pd.Timestamp,
+                   pk_start: pd.Timestamp, pk_end: pd.Timestamp) -> float | None:
+    s = sub[(sub.runtime <= t) & (sub.runtime >= t - pd.Timedelta(hours=24))
+            & (sub.ftime >= pk_start) & (sub.ftime <= pk_end)]
+    if s.empty:
+        return None
+    return float(s[s.runtime == s.runtime.max()].n_x_f.max())
+
+
+def _hrrr_as_of(sub: pd.DataFrame, t: pd.Timestamp,
+                pk_start: pd.Timestamp, pk_end: pd.Timestamp,
+                min_cov: int) -> float | None:
+    s = sub[(sub.init_time <= t) & (sub.valid_time >= pk_start) & (sub.valid_time <= pk_end)]
+    if s.empty:
+        return None
+    latest = s.sort_values("init_time").groupby("valid_time").tail(1)
+    if latest.valid_time.dt.hour.nunique() < min_cov:
+        return None
+    return float(latest.t_f.max())
+
+
+def _pick_price(prices: pd.DataFrame, slug: str, at: pd.Timestamp,
+                max_wait_hours: int = 3) -> float | None:
+    s = prices[(prices.slug == slug) & (prices.timestamp >= at)
+               & (prices.timestamp <= at + pd.Timedelta(hours=max_wait_hours))]
+    if s.empty:
+        return None
+    return float(s.sort_values("timestamp").iloc[0].p_yes)
+
+
+def run_strategy(tbl: pd.DataFrame, nbs: pd.DataFrame, gfs: pd.DataFrame,
+                 hrrr: pd.DataFrame, prices: pd.DataFrame, *,
+                 consensus_max: float = CONSENSUS_MAX_F,
+                 offset: int = OFFSET,
+                 local_floor: int = LOCAL_FLOOR_HOUR,
+                 yes_price_max: float = YES_PRICE_MAX,
                  yes_price_min: float = YES_PRICE_MIN,
-                 yes_price_max: float = YES_PRICE_MAX) -> pd.DataFrame:
-    """Apply the strategy to every (city, market_date) group."""
-    trades = []
-    for (city, md), grp in df.groupby(["city", "market_date"]):
+                 hrrr_min_cov: int = HRRR_MIN_PEAK_COV) -> pd.DataFrame:
+    """Walk every (city, market_date); return a trade row per fill."""
+    rows = []
+    for (city, md), grp in tbl.groupby(["city", "market_date"]):
         day = grp.sort_values("bucket_idx").reset_index(drop=True)
         if day["entry_price"].isna().any() or len(day) < 9:
             continue
-        cs = float(day["consensus_spread"].iloc[0])
-        if cs > consensus_max:
-            continue
+        station = day.station.iloc[0]
+        tz = TZ[station]
+        target = md.date()
         nbs_pred = day["nbs_pred_max_f"].iloc[0]
         diff = (day["bucket_center"] - nbs_pred).abs()
-        fav_idx = int(day.loc[diff.idxmin(), "bucket_idx"])
-        row = day[day["bucket_idx"] == fav_idx + offset]
+        fav = int(day.loc[diff.idxmin(), "bucket_idx"])
+        row = day[day["bucket_idx"] == fav + offset]
         if row.empty:
             continue
         r = row.iloc[0]
-        yes_p = float(r["entry_price"])
-        if yes_p < yes_price_min or yes_p > yes_price_max:
+
+        pk_s = (pd.Timestamp(target).tz_localize(tz) + pd.Timedelta(hours=12)).tz_convert("UTC")
+        pk_e = (pd.Timestamp(target).tz_localize(tz) + pd.Timedelta(hours=22)).tz_convert("UTC")
+        nbs_st = nbs[nbs.station == station]
+        gfs_st = gfs[gfs.station == station]
+        hrrr_st = hrrr[hrrr.station == station]
+        local_mid_utc = pd.Timestamp(target).tz_localize(tz).tz_convert("UTC")
+
+        entry_ts = None
+        for local_hr in range(local_floor, 24):
+            t = local_mid_utc + pd.Timedelta(hours=local_hr)
+            n = _nbs_gfs_as_of(nbs_st, t, pk_s, pk_e)
+            g = _nbs_gfs_as_of(gfs_st, t, pk_s, pk_e)
+            h = _hrrr_as_of(hrrr_st, t, pk_s, pk_e, hrrr_min_cov)
+            if n is None or g is None or h is None:
+                continue
+            if max(n, g, h) - min(n, g, h) <= consensus_max:
+                entry_ts = t
+                break
+        if entry_ts is None:
             continue
-        if side == "NO":
-            price = 1 - yes_p
-            won = 1 - int(r["won_yes"])
-        else:
-            price = yes_p
-            won = int(r["won_yes"])
+
+        yes_p = _pick_price(prices, r["slug"], entry_ts)
+        if yes_p is None or yes_p < yes_price_min or yes_p > yes_price_max:
+            continue
+        price = 1 - yes_p
+        won_no = 1 - int(r["won_yes"])
         fee = FEE_RATE * price * (1 - price)
-        pnl = float(won) - price - fee
-        trades.append({
-            "city": city, "market_date": md, "date": md.date(),
-            "consensus_spread": cs,
-            "nbs_pred": float(nbs_pred),
-            "bucket_idx": int(r["bucket_idx"]),
-            "bucket_title": r["group_item_title"],
-            "yes_price": yes_p, "price_paid": price,
-            "won_no": won, "fee": fee, "pnl": pnl,
-        })
-    return pd.DataFrame(trades)
+        pnl = float(won_no) - price - fee
+        rows.append({"city": city, "date": target, "station": station,
+                     "entry_ts": entry_ts, "yes_price": yes_p, "price_paid": price,
+                     "won_no": won_no, "fee": fee, "pnl": pnl,
+                     "bucket_idx": int(r["bucket_idx"]),
+                     "bucket_title": r["group_item_title"]})
+    return pd.DataFrame(rows)
 
 
-def print_stats(trades: pd.DataFrame, label: str) -> None:
-    s = summarize(trades)
+def _print_stats(df: pd.DataFrame, label: str) -> None:
+    s = summarize(df)
     if s.n == 0:
-        print(f"  {label:<30}  n=0")
+        print(f"  {label:<32}  n=0")
         return
-    print(f"  {label:<30}  n={s.n:>3}  hit={s.hit_rate*100:>5.1f}%  "
-          f"per=${s.per_trade_pnl:>+.4f}  tot=${s.total_pnl:>+.2f}  t={s.t_stat:>+.2f}")
+    print(f"  {label:<32}  n={s.n:>3}  W={s.wins:>3} L={s.losses:>2}  "
+          f"hit={s.hit*100:>5.1f}%  per=${s.per_trade:>+.4f}  "
+          f"tot=${s.total:>+.2f}  t={s.t:>+.2f}")
 
 
 def main() -> int:
-    print("Consensus-Fade +1 Offset — Backtest Reproducer")
-    print("=" * 70)
-    tbl = load_data()
-    print(f"Loaded {len(tbl)} buckets × days ({tbl['date'].min()} → {tbl['date'].max()})")
+    print("Consensus-Fade +1 Offset — Backtest Reproducer (v2 canonical)")
+    print("=" * 72)
 
-    # === HEADLINE ===
-    print(f"\n=== Primary result: consensus ≤ {CONSENSUS_MAX_F}°F + {SIDE} on offset=+{OFFSET} ===")
-    t = run_strategy(tbl, CONSENSUS_MAX_F, OFFSET, SIDE)
-    is_t = t[t.date <= IS_END]
-    oos_t = t[t.date >= OOS_START]
-    print_stats(t, "FULL period")
-    print_stats(is_t, f"  IS: {IS_START} → {IS_END}")
-    print_stats(oos_t, f"  OOS: {OOS_START} → {OOS_END}")
+    tbl_path = REPO / "data" / "processed" / "backtest_v2" / "trade_table.parquet"
+    if not tbl_path.exists():
+        sys.exit(f"Missing {tbl_path}. See STRATEGY.md §3 for data requirements.")
+    tbl = pd.read_parquet(tbl_path)
+    tbl["market_date"] = pd.to_datetime(tbl["market_date"])
+    tbl["date"] = tbl["market_date"].dt.date
+    tbl = tbl[(tbl.date >= IS_START) & (tbl.date <= OOS_END)].copy()
+    tbl = tbl.dropna(subset=["nbs_pred_max_f"])
+    tbl["station"] = tbl["city"].map(CITY_TO_STATION)
 
-    # === CONSENSUS THRESHOLD SWEEP ===
-    print(f"\n=== Consensus threshold sweep (offset=+{OFFSET} NO) ===")
-    for cs_max in (1.0, 1.5, 2.0, 2.5, 3.0, 99.0):
-        t_cs = run_strategy(tbl, cs_max, OFFSET, SIDE)
-        label = f"cs ≤ {cs_max:.1f}°F" if cs_max < 99 else "no filter"
-        print_stats(t_cs, label)
+    print("Loading forecasts + prices...")
+    nbs = _mos("NBS")
+    gfs = _mos("GFS")
+    hrrr = _hrrr()
+    prices = _prices()
+    print(f"  NBS={len(nbs):,}  GFS={len(gfs):,}  HRRR={len(hrrr):,}  "
+          f"prices={len(prices):,}")
 
-    # === OFFSET SWEEP UNDER CHOSEN CONSENSUS ===
-    print(f"\n=== Offset sweep under consensus ≤ {CONSENSUS_MAX_F}°F ===")
-    for off in (-2, -1, 0, 1, 2, 3):
-        t_o = run_strategy(tbl, CONSENSUS_MAX_F, off, SIDE)
-        print_stats(t_o, f"offset=+{off} NO")
+    print(f"\n=== Canonical: ≥{LOCAL_FLOOR_HOUR}:00 local, cs ≤ {CONSENSUS_MAX_F}°F, "
+          f"yes_ask ≤ {YES_PRICE_MAX} ===")
+    t = run_strategy(tbl, nbs, gfs, hrrr, prices)
+    _print_stats(t, "FULL period")
+    _print_stats(t[t.date <= IS_END], f"IS  {IS_START}..{IS_END}")
+    _print_stats(t[t.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
 
-    # === PER-CITY ===
-    print(f"\n=== Per-city (primary strategy: cs ≤ {CONSENSUS_MAX_F}°F, +{OFFSET} NO) ===")
-    t = run_strategy(tbl, CONSENSUS_MAX_F, OFFSET, SIDE)
+    print("\n=== Optional 0.22-cap overlay (§5.1, NOT canonical) ===")
+    t22 = run_strategy(tbl, nbs, gfs, hrrr, prices, yes_price_max=0.22)
+    _print_stats(t22, "FULL period")
+    _print_stats(t22[t22.date <= IS_END], f"IS  {IS_START}..{IS_END}")
+    _print_stats(t22[t22.date >= OOS_START], f"OOS {OOS_START}..{OOS_END}")
+
+    print("\n=== Per-city (canonical) ===")
     for city, g in t.sort_values("city").groupby("city"):
-        s = summarize(g)
-        if s.n < 2:
-            print(f"  {city:<18} n={s.n:>2}  (too few)")
-            continue
-        print(f"  {city:<18} n={s.n:>2}  hit={s.hit_rate*100:>5.1f}%  "
-              f"per=${s.per_trade_pnl:>+.4f}  tot=${s.total_pnl:>+.2f}  t={s.t_stat:>+.2f}")
+        _print_stats(g, city)
 
-    # === DAILY AGGREGATE ===
-    print("\n=== Daily aggregate (primary strategy) ===")
+    print("\n=== Losses (canonical) ===")
+    losses = t[t.won_no == 0]
+    if losses.empty:
+        print("  (none)")
+    else:
+        print(losses[["city", "date", "yes_price", "price_paid", "pnl"]].to_string(index=False))
+
+    print("\n=== Daily aggregate (canonical) ===")
     daily = t.groupby("date").agg(
         n_trades=("pnl", "count"),
         day_pnl=("pnl", "sum"),
@@ -221,13 +289,9 @@ def main() -> int:
     print(f"  Trading days: {n_days}")
     print(f"  Positive days: {n_pos} / {n_days}  ({n_pos/n_days*100:.0f}%)")
     print(f"  Avg trades/day: {daily['n_trades'].mean():.2f}")
-    print(f"  Avg day PnL: ${daily['day_pnl'].mean():+.4f}")
-    print(f"  Day PnL std: ${daily['day_pnl'].std():.4f}")
     print(f"  Daily Sharpe: {sharpe:.3f}")
     print(f"  Annualized Sharpe: {sharpe * np.sqrt(252):.2f}")
-    print(f"  Avg capital/day: ${daily['day_capital'].mean():.2f}")
     print(f"  Total PnL (1 share scale): ${daily['day_pnl'].sum():+.2f}")
-    print(f"  Total gross capital outlay: ${daily['day_capital'].sum():.2f}")
     print(f"  Return on gross capital: "
           f"{daily['day_pnl'].sum() / daily['day_capital'].sum() * 100:.2f}%")
 
