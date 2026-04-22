@@ -74,6 +74,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         min_entry_hour_local=args.min_entry_hour_local,
         max_yes_ask=args.max_yes_ask,
         entry_window_minutes=args.entry_window_minutes,
+        max_usd_per_market=args.max_usd_per_market,
     )
 
 
@@ -205,6 +206,16 @@ def main(argv: list[str] | None = None) -> int:
                        "passing. Prevents edge decay from late fills. "
                        "Set to 1440 (24h) to effectively disable. "
                        "Default 30.")
+    p.add_argument("--max-usd-per-market", type=float, default=30.0,
+                  help="Hard per-market-per-day USD cap on cumulative "
+                       "fill notional. Accumulates qty * fill_price as "
+                       "fills arrive; once spent >= cap, strategy "
+                       "blocks further IOCs on that market. Each "
+                       "market_date has a distinct instrument_id so the "
+                       "cap resets per market per day automatically. "
+                       "Caveat: in-memory state — a strategy restart "
+                       "mid-day currently resets the counter. "
+                       "Default $30.")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("daemon", help="Start all data watchers")

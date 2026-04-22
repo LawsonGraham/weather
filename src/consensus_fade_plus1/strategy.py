@@ -119,8 +119,19 @@ class ConsensusFadeConfig(StrategyConfig, frozen=True):
     # back to the v1-style wider filter.
     max_yes_ask: float = 0.22
 
-    # Per-market position cap in shares. At 0.99 x 110 ~ $109 risk per market.
+    # Per-market position cap in shares. Secondary safety; the primary
+    # per-market risk control is `max_usd_per_market` below.
     shares_per_market: int = 110
+
+    # Per-market USD cap on cumulative notional spent (sum of fill_qty *
+    # fill_price, tracked as fills arrive). Hard risk control — even if
+    # shares_per_market has room, we stop adding once we've spent this
+    # much on the market. Default $30/market: at typical NO prices of
+    # $0.80-$0.95, that's 30-38 shares per market, 2-3 markets/day, so
+    # ~$60-90/day total notional. Combined with the ~$0.039/trade
+    # expected edge, daily PnL expectation is ~$2-3 at this scale.
+    # Scale up once realized tracks backtest.
+    max_usd_per_market: float = 30.0
 
     # Minimum shares per IOC. Polymarket's per-market minimum is typically 5-15.
     min_order_shares: int = 5
@@ -202,6 +213,12 @@ class StrategyState:
     # Per-instrument position in shares (owned NO tokens). Updated on fills.
     positions: dict[InstrumentId, int] = field(default_factory=dict)
 
+    # Per-instrument cumulative USD notional spent (sum of fill_qty *
+    # fill_px). Used to enforce config.max_usd_per_market. Accumulated on
+    # each on_order_filled event; never decremented (hold-to-resolution,
+    # no intraday unwinds).
+    usd_spent: dict[InstrumentId, float] = field(default_factory=dict)
+
     # Per-instrument: client_order_id of an IOC currently in flight.
     # Prevents double-submission while one is still resolving.
     pending: dict[InstrumentId, ClientOrderId] = field(default_factory=dict)
@@ -217,6 +234,12 @@ class StrategyState:
     # takeable tick because the entry window has expired. Prevents log
     # spam — we log the close event once, not every 0.5s afterwards.
     window_closed: set[InstrumentId] = field(default_factory=set)
+
+    # Per-instrument: set the first time we skip because the USD cap
+    # has been reached. Log-once mirror of `window_closed` but for the
+    # `max_usd_per_market` gate — kept separate so one gate's log
+    # doesn't suppress the other's.
+    usd_cap_hit: set[InstrumentId] = field(default_factory=set)
 
     # Throttle control for the expired-unsubscribe scan.
     last_expiry_check_ns: int = 0
@@ -649,14 +672,41 @@ class ConsensusFadeStrategy(Strategy):
         if last_reject and self.clock.timestamp_ns() - last_reject < REJECT_COOLDOWN_NS:
             return
         pos = self._state.positions.get(iid, 0)
-        room = self.config.shares_per_market - pos
-        if room < self.config.min_order_shares:
-            return  # per-market cap hit (or close to it)
+        room_shares = self.config.shares_per_market - pos
+        if room_shares < self.config.min_order_shares:
+            return  # per-market share cap hit
+
+        # USD risk cap: convert remaining $ allowance into a share bound
+        # using the configured max_no_price as a conservative per-share
+        # cost (actual fills are usually cheaper).
+        spent = self._state.usd_spent.get(iid, 0.0)
+        usd_remaining = self.config.max_usd_per_market - spent
+        max_shares_by_usd = int(usd_remaining / self.config.max_no_price)
+        if max_shares_by_usd < self.config.min_order_shares:
+            if iid not in self._state.usd_cap_hit:
+                self._state.usd_cap_hit.add(iid)
+                market = self._state.active.get(iid)
+                city = market.city if market is not None else "?"
+                self.log.info(
+                    f"usd cap reached  {city}  [{iid}]  "
+                    f"spent=${spent:.2f} cap=${self.config.max_usd_per_market:.2f}",
+                    color=LogColor.YELLOW,
+                )
+                if self._ledger is not None:
+                    self._ledger.log(
+                        "usd_cap_hit",
+                        instrument_id=str(iid),
+                        city=city,
+                        usd_spent=round(spent, 4),
+                        usd_cap=self.config.max_usd_per_market,
+                    )
+            return
+
         takeable = self._takeable_shares(iid)
         if takeable < self.config.min_order_shares:
             return  # nothing in-range on the book right now
 
-        qty = int(min(takeable, room))
+        qty = int(min(takeable, room_shares, max_shares_by_usd))
         self._submit_ioc_buy(iid, qty)
 
     def _submit_ioc_buy(self, iid: InstrumentId, qty: int) -> None:
@@ -707,9 +757,15 @@ class ConsensusFadeStrategy(Strategy):
         # Any fill breaks the reject streak (exchange is clearly accepting orders).
         self._state.total_rejects_streak = 0
         qty = int(float(str(event.last_qty)))
+        px = float(str(event.last_px))
         iid = event.instrument_id
         delta = qty if event.order_side == OrderSide.BUY else -qty
         self._state.positions[iid] = self._state.positions.get(iid, 0) + delta
+        # Accumulate USD notional for the per-market USD cap. BUY only —
+        # we never sell intraday (hold-to-resolution) so this is strictly
+        # monotonic through a session.
+        if event.order_side == OrderSide.BUY:
+            self._state.usd_spent[iid] = self._state.usd_spent.get(iid, 0.0) + qty * px
         self._ledger.log(
             "filled",
             client_order_id=str(event.client_order_id),
@@ -719,10 +775,12 @@ class ConsensusFadeStrategy(Strategy):
             last_px=str(event.last_px),
             commission=str(event.commission),
             position_after=self._state.positions[iid],
+            usd_spent_after=round(self._state.usd_spent.get(iid, 0.0), 4),
         )
         self.log.info(
             f"FILL  {iid}  {event.last_qty} @ {event.last_px}  "
-            f"fee={event.commission}  pos={self._state.positions[iid]}",
+            f"fee={event.commission}  pos={self._state.positions[iid]}  "
+            f"spent=${self._state.usd_spent.get(iid, 0.0):.2f}",
             color=LogColor.GREEN,
         )
         # IOC terminal state: either fully filled (FILLED) or partial-fill+cancel.

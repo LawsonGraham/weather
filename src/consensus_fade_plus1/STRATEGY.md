@@ -107,9 +107,11 @@ no_ask[plus1]    = 1 - best_yes_bid at plus1 bucket
 10. **Entry-window still open** — within 30 minutes of the first
     moment all gates 1-9 passed for this market. After the window
     closes, further IOCs are blocked (see §4 Execution / Time).
+11. **Per-market-per-day USD cap not reached** — cumulative fill
+    notional on this market this day ≤ $30 (default). See §7.
 
-If all 10 pass: **buy NO on the plus1 bucket** whenever the strategy's
-tick-loop sees matchable asks.
+If all 11 pass: **buy NO on the plus1 bucket** sized to
+`min(takeable, shares_room, usd_room / max_no_price)`.
 
 ## 4. Execution
 
@@ -181,14 +183,25 @@ apples-to-apples price source.
 
 ### Stake sizing
 
-Baseline: 1-share-equivalent units (Kelly fraction ~0 for paper
-trading). For real deployment:
+Primary control is the per-market-per-day USD cap
+(`--max-usd-per-market 30` by default). At typical NO prices of
+$0.78-$0.99 that's ~30-38 shares/market. With 2-3 qualifying
+markets/day, total daily notional is ~$60-90.
 
-- Paper trade first at nominal $10-20 per trade
-- After 30 trades with realized ≥ $0.03/trade AND ≤ 1 loss, scale to
-  $50-100/trade
-- Hard cap per market: stake ≤ 25% of observed depth within 2¢ of
-  best NO-ask
+- **Per-market-per-day cap**: $30 USD spent hard cap. Accumulates
+  cumulative fill notional (`qty * fill_px`) and blocks further IOCs
+  once reached. Each `(city, date)` combination has a distinct
+  `instrument_id` so this resets per-market-per-day automatically.
+- **Per-market share cap** (secondary safety): 110 shares. At
+  $0.99 max_no_price this is ~$109 — well above the $30 USD cap,
+  so rarely binds, but retained so a badly-configured run can't
+  blow past reasonable position sizes.
+- **Stake progression**:
+  - Paper trade first with default $30/market cap
+  - After 30 live trades with realized ≥ $0.03/share AND ≤ 1 loss,
+    consider raising to $50/market
+  - Keep `stake ≤ 25% of observed depth within 2¢ of best NO-ask`
+    to bound slippage
 
 ### Order type
 
@@ -384,19 +397,27 @@ Typical day with 2-3 qualifying markets:
 | within 2¢ (recommended) | **$300-500** |
 | within 5¢ (aggressive, edge erodes) | $600-900 |
 
-### Practical deployment ceiling
+### Practical deployment ceiling (starting stake)
 
-- **~$300-400/day total capital** with acceptable slippage (tighter
-  than cap-0.50 since the cap-0.22 rule takes fewer trades and all
-  fills are deep on the NO side where depth is thinner)
-- **~$10-15/day expected PnL** at that scale (per-trade edge $0.039,
-  ~2.7 trades/day avg)
+- **$30/market USD cap** × 2-3 qualifying markets/day = $60-90/day
+  total notional
+- **~$2-3/day expected PnL** at this scale (per-share edge $0.039 ×
+  ~30 shares × 2-3 markets)
+- This is the **starting stake** for live paper + initial real capital
+- Scale per-market cap upward (→ $50, $100) only after 30+ trades with
+  realized ≥ backtest expectation
+
+### Higher-stake ceiling (later)
+
+Once realized matches backtest and book depth is validated:
+
+- **~$300-400/day total capital** with acceptable slippage
+- **~$10-15/day expected PnL** at that scale
 - Beyond ~$400/day, walking the book deeper eats the edge
 
-This is a **portfolio** — you cannot concentrate in one market. Each
-qualifying bucket gets ~$50-100 of stake; diversification across 2-3
-qualifying markets per day is what drives the 100% hit rate and
-positive-day streak (27 of 27 in backtest).
+This is a **portfolio** — you cannot concentrate in one market.
+Diversification across 2-3 qualifying markets per day is what drives
+the 100% hit rate and positive-day streak (27 of 27 in backtest).
 
 ### Caveats
 
@@ -439,16 +460,34 @@ positive-day streak (27 of 27 in backtest).
 ### What can go wrong even on a "winning" day
 
 Under the canonical cap-0.22 rule we buy NO at $0.78-$0.99. A single
-loss costs $0.78-$0.99 per share. Per-trade edge is $0.039, so **one
-loss wipes out 20-25 winning trades**. Sizing must account for this:
+loss costs $0.78-$0.99 per share. Per-trade edge is $0.039/share, so
+**one loss wipes out 20-25 winning shares**. Sizing must account for
+this:
 
-- At $100/share stake, a single loss costs ~$78-$99; a single win
-  pays ~$4
-- Single-day P&L is skewed: small wins, occasional large loss
-- Max drawdown in canonical backtest: 0 (zero losses observed)
-- Build a 25-trade realized-PnL buffer above zero before scaling stake
-- The tighter the cap, the more expensive an individual loss is — the
-  trade-off is the filter is more accurate at preventing losses
+- **$30/market cap** bounds single-market loss at ~$30 max
+  (worst case: 100% of stake lost if the +1 bucket resolves)
+- With 2-3 qualifying markets/day at the $30 cap, max daily loss if
+  ALL go against us is ~$60-$90. 27/27 positive days in backtest so
+  that's a tail scenario, but plan for it.
+- Max drawdown in canonical backtest: 0 (zero losses observed in 72
+  trades)
+- Build a 25-trade realized-PnL buffer above zero before raising the
+  per-market cap
+- The tighter the yes_ask filter, the more expensive an individual
+  loss is in share terms — the $30 USD cap bounds that exposure
+
+### Risk-control caveats
+
+- **USD cap is in-memory.** If the strategy crashes or is restarted
+  mid-day, `usd_spent` resets to zero per instrument. A restart
+  could therefore spend another $30 on the same market that already
+  absorbed $30 pre-crash. To fix: reconcile `usd_spent` from the
+  ledger file on `on_start` by summing fill events for today's
+  instruments. Acceptable risk during paper-trade; must be fixed
+  before committing real capital beyond ~$100/day.
+- **Nautilus's position reconciliation** does rebuild `positions`
+  from venue state on startup, so the share-cap side is safe
+  across restarts.
 
 ## 8. Deployment checklist
 
@@ -461,7 +500,8 @@ loss wipes out 20-25 winning trades**. Sizing must account for this:
       16:00 local for each station
 - [ ] City→tz table hard-wired (`src/lib/weather/timezones.py`)
 - [ ] `cfp discover` runs cleanly with local-time gate
-- [ ] `cfp run` default params: `--max-yes-ask 0.22` / `--min-entry-hour-local 16`
+- [ ] `cfp run` default params: `--max-yes-ask 0.22` / `--min-entry-hour-local 16` / `--max-usd-per-market 30` / `--entry-window-minutes 30`
+- [ ] Plan to add `usd_spent` reconciliation from ledger on `on_start` before scaling past $30/market (so restarts don't double-spend)
 
 ### Week 1-2: Paper
 
@@ -501,6 +541,15 @@ loss wipes out 20-25 winning trades**. Sizing must account for this:
 
 ## 10. Changelog
 
+- **2026-04-22 (latest)** — **$30/market-per-day USD cap.** Hard
+  per-market-per-day risk control: cumulative fill notional is
+  tracked in-memory as fills arrive and blocks further IOCs once
+  cap is reached. Natural per-market-per-day semantics because
+  each `instrument_id = (condition_id, no_token_id)` is already
+  unique per (city, market_date). At $30 cap + ~$0.90 NO fill prices,
+  that's 30-38 shares/market. Known limitation: in-memory state
+  resets on strategy restart — a fix via `on_start` reconciliation
+  from ledger is on the deployment checklist.
 - **2026-04-22 (latest)** — **Bounded 30-min entry window.** Live
   strategy previously took liquidity continuously through the full
   afternoon once gates first passed. Now each market has a 30-minute
