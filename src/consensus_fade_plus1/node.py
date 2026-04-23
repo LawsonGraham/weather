@@ -73,6 +73,11 @@ def _build_node(markets: list[TradeableMarket], *,
     from nautilus_trader.live.node import TradingNode
     from nautilus_trader.model.identifiers import TraderId
 
+    # B-001 fix: Polymarket WSS silently ignores Nautilus's dynamic-subscribe
+    # message format. Patch routes runtime subscribes through reconnect so the
+    # working initial-connect format is used instead. Apply BEFORE building
+    # any data client.
+    import lib.polymarket.ws_subscribe_patch  # noqa: F401
     from consensus_fade_plus1.strategy import (
         ConsensusFadeConfig,
         ConsensusFadeStrategy,
