@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 import duckdb
@@ -20,6 +20,15 @@ from lib.weather.forecasts import get_all_cities
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKETS_PATH = REPO_ROOT / "data" / "processed" / "polymarket_weather" / "markets.parquet"
+
+# Matches strategy.py::_unsubscribe_expired's grace_ns. Polymarket's Gamma API
+# returns end_date_iso as a date-only string (e.g. "2026-04-22"), which
+# Nautilus's adapter parses as midnight UTC. Real market close is typically
+# noon UTC + resolution delay, so we give a 24h grace. After this window the
+# market is fully resolved from the strategy's POV — positions stay tracked
+# in _state.positions, but book subscriptions are torn down and should not
+# be re-established. Keep this constant in sync with strategy.py's grace_ns.
+EXPIRY_GRACE = timedelta(hours=24)
 
 _RE_RANGE = re.compile(r"^(\d+)-(\d+)°F$")
 _RE_BELOW = re.compile(r"^(\d+)°F or below$")
@@ -65,15 +74,32 @@ def discover_tradeable_markets(
     """Return the list of +1 offset markets eligible to trade today.
 
     Filters:
-      1. All three forecasts present (NBS + GFS + HRRR) — HRRR also serves
+      1. target_date is within 24h grace of now (else return []). Past-grace
+         dates would produce markets that the strategy's rollover subscribes
+         and then `_unsubscribe_expired` immediately tears down again — a
+         sub/unsub churn cycle. See BUGS.md B-004.
+      2. All three forecasts present (NBS + GFS + HRRR) — HRRR also serves
          as a freshness check: when HRRR is partial-day (pre-peak cycles
          only), its daily max falls far below NBS/GFS and the consensus
          spread fails.
-      2. consensus_spread ≤ consensus_max across all three models
-      3. +1 offset bucket exists for this city on this market_date
+      3. consensus_spread ≤ consensus_max across all three models
+      4. +1 offset bucket exists for this city on this market_date
     """
     if target_date is None:
         target_date = datetime.now(UTC).date()
+
+    # Filter (1): fast-exit when target_date is past the strategy's 24h
+    # expiration grace. A market with end_date=target_date has its
+    # Nautilus-parsed expiration at midnight UTC of that date; grace-end is
+    # 24h later. Once we're past grace-end, any subscription the rollover
+    # creates will be torn down on the next `_unsubscribe_expired` sweep
+    # (every 5 min), and discovery will just re-create it on the following
+    # tick. Skip the whole date.
+    grace_end = datetime.combine(
+        target_date + timedelta(days=1), time(0, 0, 0), UTC,
+    )
+    if grace_end < datetime.now(UTC):
+        return []
 
     if not MARKETS_PATH.exists():
         raise FileNotFoundError(
