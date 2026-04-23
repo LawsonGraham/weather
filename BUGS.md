@@ -20,61 +20,6 @@ first live daily session on 2026-04-22.
 
 ## OPEN
 
-### B-001 — Dynamic `subscribe_order_book_deltas` doesn't propagate to `PolymarketWebSocketClient` subscription registry
-
-- **Severity**: HIGH
-- **Status**: BEING WORKED ON (worktree `wt/b-001-dynamic-subscribe`, started 2026-04-23T03:53Z)
-- **Observed**: 2026-04-22T17:42Z
-- **Symptom**: Markets added to `_state.subscribed` via
-  `_refresh_subscribed_and_active` after the initial `on_start()` had
-  their Nautilus DataClient subscription call succeed (log:
-  `DataClient-POLYMARKET: Subscribed ... order book deltas; depth=10`),
-  but the underlying WSS client (`PolymarketWebSocketClient`) never
-  added those instruments to its active subscriptions. Result: `cache.order_book(iid)`
-  returned a book object whose `.bids()` and `.asks()` iterables were
-  empty for those instruments, for the full duration they were
-  subscribed.
-- **Evidence**:
-  - `data/processed/cfp_book_snapshots/2026-04-22.jsonl` at 17:08, 17:18,
-    17:28, 17:38 each showed `bids=[] asks=[]` for the two today-markets
-    (ATL 84-85 NO, MIA 82-83 NO) subscribed at 17:01:41.
-  - Direct CLOB REST query to the same tokens showed real liquidity
-    (e.g. `[(0.01, 6091), (0.02, 2055), ...]` on ATL NO).
-  - Every Polymarket WSS reconnect line in the bot log
-    (`Connected to wss://ws-subscriptions-clob.polymarket.com/ws/market`)
-    reported the **same** `with 5 subscriptions` count — never 7 —
-    even after the two new instruments were added at 17:01.
-  - After bot restart at 17:54 (which re-seeded subscriptions via
-    `on_start()` rather than via rollover), books populated within
-    seconds: ATL NO at 18:04 had `best_bid=$0.86, best_ask=$0.88`.
-- **Impact**: Effectively blocks any market that qualifies for trade
-  after `on_start()` completes. At our scale, this could silently miss
-  entire trading windows. On 2026-04-22 this blocked the 19:00Z ATL
-  entry window for ~46 minutes until restart; we only caught it because
-  book snapshots were being logged every 10 minutes.
-- **Triage**:
-  1. Read Nautilus's `PolymarketWebSocketClient.subscribe()` and
-     `_client_subscriptions` mutation path (in
-     `.venv/lib/python3.13/site-packages/nautilus_trader/adapters/polymarket/websocket/client.py`).
-  2. Add a debug-level log when the PolymarketWebSocketClient's
-     `_subscription_counts` dict is updated, so dynamic vs startup
-     subscriptions are distinguishable in output.
-  3. Reproduce deterministically: start the bot with empty
-     `instrument_ids`, then trigger discovery mid-session to force the
-     dynamic code path.
-  4. Compare the subscribe payload (`_create_dynamic_subscribe_msg`)
-     sent on the WSS against what Polymarket expects. There may be a
-     formatting issue (e.g., sending condition_id when venue expects
-     asset_id, or vice versa).
-- **Proposed fix**: Once root cause is identified, either patch
-  Nautilus (submit upstream PR) or work around by forcing a WS
-  reconnect after any dynamic subscribe (reconnect path calls
-  `_subscribe_all` which DOES correctly register all subs).
-- **Interim mitigation**: Our `proxy` restart workflow. Not sustainable
-  long-term.
-
----
-
 ### B-003 — Spurious `active_added` events on every discovery rebuild
 
 - **Severity**: LOW (log/ledger noise only)
@@ -157,6 +102,93 @@ first live daily session on 2026-04-22.
 ---
 
 ## FIXED
+
+### F-006 — Polymarket WSS dynamic subscribe message silently ignored (was B-001)
+
+- **Severity at time of finding**: HIGH (blocks any market subscribed
+  after `on_start()` — silently missed entire trading windows on
+  2026-04-22)
+- **Fixed in**: branch `wt/b-001-dynamic-subscribe`, commit 178a63c
+  (`fix(B-001): patch Polymarket WSS dynamic subscribe via reconnect`),
+  2026-04-23. Pending fast-forward merge into main.
+- **Observed**: 2026-04-22T17:42Z (first live session)
+- **Root cause**: `PolymarketWebSocketClient` ships two separate
+  subscribe paths. The **initial-connect** path (`_subscribe_all`,
+  invoked when `_connect_client` brings up a fresh WS) sends
+  `{"type": "market", "assets_ids": [...]}` — Polymarket's documented
+  CLOB WSS subscribe format, which the server honors. The
+  **dynamic-subscribe** path (`subscribe()` → `_create_dynamic_subscribe_msg`,
+  invoked when a sub is added after the client is already connected)
+  sends `{"assets_ids": [...], "operation": "subscribe"}` — a
+  Nautilus-side invention that **Polymarket's CLOB WSS server silently
+  drops**. Polymarket's official `py_clob_client` has no concept of
+  runtime subscribe-mutation; the documented contract is "list every
+  asset in the initial handshake". So every market the strategy added
+  after `on_start()` (i.e. via `_refresh_subscribed_and_active`) sat
+  registered in Nautilus's local bookkeeping but never appeared in
+  Polymarket's actual subscription set. `cache.order_book(iid)`
+  returned a non-None book object whose `.bids()` / `.asks()` stayed
+  empty for the lifetime of the subscription.
+- **Why the misleading "Subscribed ... order book deltas; depth=10"
+  log fires anyway**: that line is the `success_msg` of the parent
+  `LiveDataClient.subscribe_order_book_deltas`'s `create_task` call.
+  It prints when the awaited coroutine returns *normally* — which it
+  always does, because the dynamic-subscribe `_send` succeeds at the
+  WebSocket-write layer. The server-side silent drop is invisible to
+  the client.
+- **Why bot restart fixed it**: restart re-runs `on_start()`, which
+  feeds every market into `instrument_ids` upfront. Each subscribe is
+  issued *before* the underlying WS is connected, so it goes through
+  the `add_subscription`/`_schedule_delayed_connect` path. The eventual
+  `_connect_client` then fires `_subscribe_all` with every queued sub
+  in the working initial-connect format. Books populate within seconds
+  (verified: ATL 84-85 NO snapshot at 18:04:34 had real depth after
+  the 17:54 restart).
+- **Fix**: New module `src/lib/polymarket/ws_subscribe_patch.py`
+  monkey-patches `PolymarketWebSocketClient.subscribe` at import time.
+  The replacement: when a fresh sub is added against a connected
+  client, append it to the local subscription bookkeeping (under the
+  existing `_lock`) and then call `_disconnect_client` followed by
+  `_connect_client` — which re-runs the working `_subscribe_all` with
+  the new sub included. Coalesces concurrent dynamic subscribes via
+  the existing `_is_connecting` flag (subs queued during a reconnect
+  ride along on that reconnect's `_subscribe_all`). Pre-connect
+  subscribes and refcount-only resubscribes both fall through to the
+  upstream behavior — only the broken dynamic-message path is
+  intercepted. Patched once at top of `node._build_node` via
+  `import lib.polymarket.ws_subscribe_patch`. Idempotent.
+- **Why not patch Nautilus upstream?** Could submit a PR, but the
+  patch is a behavioral change (every dynamic subscribe now triggers
+  a reconnect) that other adapter users might not want. Local patch
+  keeps the blast radius to this repo. Upstream PR is a future option
+  if Polymarket ever publishes a real dynamic-subscribe API.
+- **Verification**: `tests/lib/polymarket/test_ws_subscribe_patch.py`
+  has 5 tests proving the patched behavior:
+    1. `test_subscribe_already_in_refcount_is_noop_at_ws_layer` —
+       refcount-only resubscribe sends nothing.
+    2. `test_subscribe_pre_connect_does_not_reconnect` — pre-connect
+       subs queue without triggering reconnect.
+    3. `test_subscribe_post_connect_triggers_reconnect_not_dynamic_send`
+       — the core fix: post-connect subs invoke `_disconnect_client`+
+       `_connect_client` and explicitly do **not** invoke `_send` with
+       the broken dynamic-subscribe payload.
+    4. `test_subscribe_post_connect_under_concurrency_only_one_reconnect_per_sub`
+       — five concurrent subscribes go through the reconnect path
+       without ever hitting the broken send path.
+    5. `test_unsubscribe_unchanged` — explicit guard that we did not
+       touch the unsubscribe path.
+
+  `tests/lib/polymarket/test_ws_subscribe_upstream_regression.py`
+  reaches past the patch via `importlib.reload` and proves the
+  unpatched class still emits the broken
+  `{"assets_ids": ["dyn_token"], "operation": "subscribe"}` payload —
+  this is a regression-witness so that if upstream ever changes its
+  dynamic-subscribe shape, the test fails loudly and we re-evaluate
+  the patch.
+
+  All 6 tests pass: `uv run pytest tests/lib/polymarket/ --asyncio-mode=auto`.
+- **Interim mitigation removed**: bot restart workaround no longer
+  needed. The patch handles dynamic subscribes transparently.
 
 ### F-005 — Reconciled existing positions weren't credited to `_state.usd_spent` (was B-002)
 
