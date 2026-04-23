@@ -30,6 +30,10 @@ Seven subcommands, grouped by purpose:
       Persists: orders → cfp_ledger/, book snapshots every 10min →
       cfp_book_snapshots/. Ctrl+C cancels unfilled orders cleanly.
 
+  cfp redeem (--condition-id 0x...|--slug <slug>) [--broadcast]
+      Redeem a resolved winning position on-chain. Dry-run by default.
+      Handles neg_risk and vanilla CTF markets automatically.
+
 Typical operator flow:
   1. cfp setup                  # one time ever
   2. cfp daemon &               # background — keeps weather+markets fresh
@@ -75,6 +79,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_yes_ask=args.max_yes_ask,
         entry_window_minutes=args.entry_window_minutes,
         max_usd_per_market=args.max_usd_per_market,
+    )
+
+
+def cmd_redeem(args: argparse.Namespace) -> int:
+    from lib.polymarket.redeem import redeem
+    return redeem(
+        condition_id=args.condition_id,
+        slug=args.slug,
+        broadcast=args.broadcast,
     )
 
 
@@ -225,6 +238,17 @@ def main(argv: list[str] | None = None) -> int:
                        "mid-day currently resets the counter. "
                        "Default $30.")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("redeem",
+                      help="Redeem a resolved winning position on-chain")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--condition-id", dest="condition_id", default=None,
+                   help="0x-prefixed condition id (from ledger session_start)")
+    g.add_argument("--slug", default=None,
+                   help="Polymarket slug, e.g. highest-temperature-in-atlanta-...")
+    p.add_argument("--broadcast", action="store_true",
+                  help="Actually send the tx. Omit for dry-run.")
+    p.set_defaults(func=cmd_redeem)
 
     p = sub.add_parser("daemon", help="Start all data watchers")
     p.set_defaults(func=cmd_daemon)
