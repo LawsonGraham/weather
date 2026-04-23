@@ -213,7 +213,11 @@ class StrategyState:
     active_markets_mtime: float = 0.0
 
     # Per-instrument position in shares (owned NO tokens). Updated on fills.
-    positions: dict[InstrumentId, int] = field(default_factory=dict)
+    # Stored as float because Polymarket fills can be fractional: an IOC for
+    # qty=5 can match a 5.9756-share maker block (allow_overfills=True in
+    # node.py). Truncating to int loses ~0.5-1 share per overfill and lets
+    # shares_per_market drift. Keep as float; cast only at submit boundary.
+    positions: dict[InstrumentId, float] = field(default_factory=dict)
 
     # Per-instrument cumulative USD notional spent (sum of fill_qty *
     # fill_px). Used to enforce config.max_usd_per_market. Accumulated on
@@ -677,7 +681,7 @@ class ConsensusFadeStrategy(Strategy):
         last_reject = self._state.last_reject_ns.get(iid, 0)
         if last_reject and self.clock.timestamp_ns() - last_reject < REJECT_COOLDOWN_NS:
             return
-        pos = self._state.positions.get(iid, 0)
+        pos = self._state.positions.get(iid, 0.0)
         room_shares = self.config.shares_per_market - pos
         if room_shares < self.config.min_order_shares:
             return  # per-market share cap hit
@@ -762,11 +766,25 @@ class ConsensusFadeStrategy(Strategy):
     def on_order_filled(self, event: OrderFilled) -> None:
         # Any fill breaks the reject streak (exchange is clearly accepting orders).
         self._state.total_rejects_streak = 0
-        qty = int(float(str(event.last_qty)))
-        px = float(str(event.last_px))
+        # Preserve fractional shares. Polymarket fills in maker-block units
+        # (5.9756 common) under allow_overfills=True. int(qty) truncates and
+        # lets both the share cap AND the USD cap drift positive.
+        qty = float(event.last_qty)
+        # Nautilus's Polymarket adapter sometimes emits `inferred` OrderFilled
+        # events with last_px=0.00 when the match arrives before the accept
+        # (async match-then-accept path, seen in the 2026-04-22T05:43 ATL fill
+        # log: "Generated inferred OrderFilled ... last_px=0.00 USDC.e"). A
+        # 0.00 price collapses usd_spent += qty * px to zero, effectively
+        # disabling the per-market USD cap. Fall back to the strategy's price
+        # ceiling — conservative (overcounts → USD cap fires earlier/safer).
+        # An IOC at max_no_price can never actually fill above that price, so
+        # max_no_price is a hard upper bound on what we paid per share.
+        px = float(event.last_px)
+        if px <= 0.0:
+            px = self.config.max_no_price
         iid = event.instrument_id
         delta = qty if event.order_side == OrderSide.BUY else -qty
-        self._state.positions[iid] = self._state.positions.get(iid, 0) + delta
+        self._state.positions[iid] = self._state.positions.get(iid, 0.0) + delta
         # Accumulate USD notional for the per-market USD cap. BUY only —
         # we never sell intraday (hold-to-resolution) so this is strictly
         # monotonic through a session.
