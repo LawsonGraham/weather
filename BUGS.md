@@ -75,55 +75,6 @@ first live daily session on 2026-04-22.
 
 ---
 
-### B-002 — Reconciled existing positions aren't credited to `_state.usd_spent`
-
-- **Severity**: MEDIUM (depends on per-market cap sizing; low at our
-  current $30 cap, material at $100-300 cap)
-- **Status**: BEING WORKED ON (worktree wt/b002-reconcile-usd, 2026-04-22)
-- **Observed**: 2026-04-22T19:00:00Z
-- **Symptom**: At bot restart, Nautilus's ExecEngine reconciled an
-  existing Polymarket position by synthesizing an `OrderFilled` event
-  ("Generated inferred OrderFilled" in log) for the 5.9218-share ATL
-  position from yesterday's Phase 6B test. This should have contributed
-  to the strategy's `_state.usd_spent[iid]` via the normal
-  `on_order_filled` handler. Instead, 65 minutes later at the 19:00Z
-  TAKE decision, the strategy computed `max_shares_by_usd = 32`
-  (implying `usd_spent[iid] ≈ $0`) rather than ~26 (which would be
-  correct if the reconciled $5.50 were counted).
-- **Evidence**:
-  - Log at `17:54:34.759Z`: `Generated inferred OrderFilled(..., last_qty=5.921800, last_px=0.00 USDC.e, ...)`
-  - Log at `19:00:00.587Z`: `TAKE ... BUY 32 @ 0.93 IOC` — qty=32 is the
-    upper bound allowed by the USD cap with `usd_spent[iid]=0`.
-  - Resulting overspend: $4.90 yesterday + $29.76 today = $34.66 on a
-    market with a $30 declared cap.
-- **Impact**: Per-market USD cap is effectively "fresh budget per
-  session restart" rather than "fresh budget per market per day". If an
-  operator restarts the bot mid-session (e.g., to apply a bugfix), the
-  cap resets even for markets with existing exposure.
-- **Triage**:
-  1. Determine whether `on_order_filled` is actually called for the
-     reconciled fill, or whether ExecEngine routes it differently. Add
-     a debug log at the top of `on_order_filled` to confirm.
-  2. If it IS called but during a window where `_state.usd_spent` hasn't
-     been initialized, the event is being logged against `{}` default
-     and "forgotten". Check ordering of `on_start()` vs reconciliation.
-  3. Consider adding an explicit post-`on_start` seed step that reads
-     `cache.positions()` and seeds `_state.positions` and
-     `_state.usd_spent` from existing Nautilus state.
-- **Proposed fix**:
-  ```python
-  # in on_start(), after super().on_start()
-  for position in self.cache.positions(strategy_id=self.id):
-      iid = position.instrument_id
-      qty = float(position.quantity)
-      self._state.positions[iid] = qty
-      # Can't recover true avg_px from cache alone; use max_no_price
-      # as conservative fallback. Only matters for USD cap.
-      self._state.usd_spent[iid] = qty * self.config.max_no_price
-  ```
-
----
-
 ### B-003 — Spurious `active_added` events on every discovery rebuild
 
 - **Severity**: LOW (log/ledger noise only)
@@ -206,6 +157,53 @@ first live daily session on 2026-04-22.
 ---
 
 ## FIXED
+
+### F-005 — Reconciled existing positions weren't credited to `_state.usd_spent` (was B-002)
+
+- **Severity at time of finding**: MEDIUM (distorts per-market USD
+  cap across bot restarts; material once we scale past $30/market)
+- **Fixed in**: commit c82d86c on main (`strategy: seed usd_spent
+  from venue positions on startup (B-002)`), 2026-04-22
+- **Observed**: 2026-04-22T19:00:00Z (first full live session)
+- **Root cause**: Nautilus's system kernel runs startup
+  reconciliation BEFORE calling `_trader.start()` (see
+  `system/kernel.py::start_async` lines 1021-1033). At
+  reconciliation time, a Strategy's FSM is still `READY`, not
+  `RUNNING`. The inferred `OrderFilled` events the ExecEngine
+  synthesizes during reconciliation are published to the
+  `events.order.{strategy_id}` topic, but `Strategy.handle_event`
+  drops events when the FSM state isn't `RUNNING` (see
+  `trading/strategy.pyx` line 1917: `if self._fsm.state !=
+  ComponentState.RUNNING: return`). Net effect: pre-existing venue
+  exposure at restart never reaches `on_order_filled`, and
+  `_state.usd_spent` / `_state.positions` stay at their defaults
+  — so the per-market USD cap effectively resets on every restart.
+- **Fix**: New `_seed_state_from_reconciled_positions` method in
+  `ConsensusFadeStrategy`, called from `on_start` after the FSM has
+  transitioned to `RUNNING`. Reads `self.cache.positions_open()`
+  (which was populated by the reconciliation pass that the strategy
+  couldn't observe in real-time) and credits LONG positions against
+  `_state.positions` + `_state.usd_spent`. Uses
+  `Position.avg_px_open` when available; falls back to
+  `config.max_no_price` when the venue report produced
+  `last_px=$0.00` (common on Polymarket — see F-002). Pure helper
+  `compute_reconciled_position_seeds` lives at module scope so it's
+  unit-testable without standing up a TradingNode.
+- **Not `cache.positions(strategy_id=self.id)`**: the BUGS.md original
+  proposed fix suggested filtering by strategy_id. But reconciled
+  orders are tagged with `strategy_id="EXTERNAL"` unless the strategy
+  pre-claims them via `StrategyConfig.external_order_claims`.
+  Filtering by `self.id` would return nothing. Using `positions_open()`
+  (no filter) picks up EXTERNAL positions too, which is what we want.
+- **Verification**: New test suite `tests/test_reconciled_position_seeding.py`
+  — 9 tests covering the B-002 repro (5.92 shares, avg_px=0 → USD
+  credit of $5.50), the non-fallback path (recovered avg_px=$0.82),
+  SHORT/FLAT skip, empty input, and the usd_cap arithmetic shift
+  (`max_shares_by_usd` now 26 instead of 32 on a same-market
+  restart — matching BUGS.md's expected "~26" calculation). All pass.
+- **Scrubbed stale docs**: `STRATEGY.md §7 Risk-control caveats` and
+  `node.py`'s startup banner both claimed restarts reset the USD cap;
+  both updated in the same commit.
 
 ### F-001 — `int(float(str(last_qty)))` truncated fractional-share fills
 
