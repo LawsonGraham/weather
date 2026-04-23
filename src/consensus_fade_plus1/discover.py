@@ -126,7 +126,13 @@ def discover_tradeable_markets(
     if not tight:
         return []
 
-    # Pull bucket metadata for these cities on this date
+    # Pull bucket metadata for these cities on this date. Filter to
+    # highest-temperature markets only: NYC and MIA carry a parallel
+    # "lowest-temperature-..." market series with the same city+date+
+    # weather_tags values but different bucket ranges. Without this
+    # filter the query returns both ladders; `bucket_idx == fav_idx+1`
+    # matches rows in each, and `iloc[0]` picks the wrong market. See
+    # BUGS.md F-008.
     con = duckdb.connect()
     cities_clause = ",".join(f"'{f.city}'" for f, _ in tight)
     df = con.execute(f"""
@@ -135,6 +141,7 @@ def discover_tradeable_markets(
                DATE(end_date) AS market_date
         FROM '{MARKETS_PATH}'
         WHERE weather_tags ILIKE '%Daily Temperature%'
+          AND slug LIKE 'highest-temperature-%'
           AND DATE(end_date) = '{target_date}'
           AND city IN ({cities_clause})
         ORDER BY city, bucket_idx

@@ -74,6 +74,54 @@ first live daily session on 2026-04-22.
 
 ## FIXED
 
+### F-008 — Discover subscribed NYC/MIA to the wrong (low-temp) market (was B-006)
+
+- **Severity at time of finding**: HIGH (would have placed real IOCs on
+  unvetted markets; mitigated only by the `max_yes_ask ≤ 0.50` gate,
+  which could still let the trade through for low-temp buckets sitting
+  in a ~10-25% YES range)
+- **Fixed in**: commit (in-progress) adding `AND slug LIKE
+  'highest-temperature-%'` to `discover.py::discover_tradeable_markets`
+  DuckDB query, 2026-04-23. Merged to main.
+- **Observed**: 2026-04-23T17:00:59Z. After the 07:22Z restart, the
+  first discovery tick subscribed NYC to `lowest-temperature-in-nyc-
+  on-april-23-2026-52` (bucket 52-53°F) and MIA to `lowest-temperature-
+  in-miami-on-april-23-2026-76-77f` (bucket 76-77°F). Both markets were
+  the LOW-TEMP series, not the HIGH-TEMP +1 offset the strategy targets.
+- **Root cause**: For April 23, NYC and Miami each have TWO parallel
+  Polymarket questions live: `highest-temperature-...` (daily max) and
+  `lowest-temperature-...` (morning min). Both series carry
+  `weather_tags = 'Daily Temperature'` and 11 buckets indexed 0-10 by
+  `group_item_threshold`. The pre-fix query filtered only on tag +
+  city + end_date — it returned 22 rows for NYC/MIA (11 highest + 11
+  lowest), each with overlapping `bucket_idx` values. When
+  `discover_tradeable_markets` computed favorite-bucket and looked up
+  `city_df[city_df["bucket_idx"] == fav_idx + 1]`, two rows matched
+  (same idx, different series). `plus1.iloc[0]` — DuckDB scan order
+  with no tiebreaker beyond `city, bucket_idx` — picked whichever
+  landed first, which happened to be the LOW-TEMP series.
+- **Why the other 9 cities were immune**: ATL, AUS, DAL, DEN, HOU,
+  LAX, ORD, SEA, SFO only carry the HIGH-TEMP series for April 23.
+  Only NYC + MIA have concurrent LOW-TEMP markets (likely because
+  morning-low variance is high enough in these coastal/continental
+  cities for Polymarket to find takers).
+- **Fix**: Add `AND slug LIKE 'highest-temperature-%'` to the query.
+  All daily-high-temperature markets use the slug prefix
+  `highest-temperature-in-<city>-on-<date>-...`; filtering on that
+  excludes the parallel low-temp ladder deterministically. Chose
+  slug-prefix filter over bucket-title-parsing because slugs are
+  already the primary key in the transform and are guaranteed unique
+  per market. Could also have filtered on a `market_type` column but
+  we don't currently ingest one.
+- **Verification**: Pre-fix `cfp discover` returned NYC +1 = 52-53°F,
+  MIA +1 = 76-77°F. Post-fix: NYC +1 = 74-75°F, MIA +1 = 82-83°F
+  (both correct — one bucket above each city's forecast-favorite).
+  ATL +1 = 86-87°F unchanged (always correct, no low-temp market).
+- **Operator note**: Like F-007, the running strategy holds the
+  pre-fix `discover` module in memory — caught before any IOCs fired
+  against the wrong markets because the 15:00-local entry gate hadn't
+  opened yet. Restart is required for the fix to take effect.
+
 ### F-007 — Yesterday's expired markets resubscribe/unsubscribe on a 5-min cycle (was B-004)
 
 - **Severity at time of finding**: LOW (cosmetic — log noise, Gamma
