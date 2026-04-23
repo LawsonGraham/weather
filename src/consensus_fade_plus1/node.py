@@ -199,8 +199,8 @@ def run(*, max_no_price: float = 0.93,
     print(f"[node] entry window: {entry_window_minutes} minutes from first "
           f"all-gates-pass per market")
     print(f"[node] per-market USD cap: ${max_usd_per_market:.2f} "
-          f"(resets per market, in-memory — restarts currently reset it; "
-          f"see STRATEGY.md §7)")
+          f"(re-seeded from venue positions on each restart; see "
+          f"STRATEGY.md §7)")
     print(f"[node] NO price ceiling (=edge floor): ${max_no_price:.2f} "
           f"(min edge per share = ${1 - max_no_price:.2f})")
 

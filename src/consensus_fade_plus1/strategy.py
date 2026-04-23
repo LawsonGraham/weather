@@ -69,6 +69,57 @@ from nautilus_trader.trading.strategy import Strategy
 from consensus_fade_plus1.persistence import BookSnapshotWriter, LedgerWriter
 from lib.weather.timezones import CITY_TO_TZ
 
+# -----------------------------------------------------------------------------
+# Reconciled-position seeding (pure helper — unit-testable without TradingNode)
+# -----------------------------------------------------------------------------
+
+def compute_reconciled_position_seeds(
+    positions,
+    fallback_px: float,
+) -> list[tuple[InstrumentId, float, float, float]]:
+    """Walk reconciled positions from Nautilus cache; return LONG seeds as
+    (instrument_id, qty, effective_px, original_avg_px_open) quadruples.
+
+    Why this exists
+    ---------------
+    Nautilus's system kernel runs startup reconciliation BEFORE calling
+    ``_trader.start()`` (see ``system/kernel.py::start_async`` lines
+    1021-1033). At reconciliation time, a Strategy's FSM is still READY,
+    not RUNNING. The inferred ``OrderFilled`` events the ExecEngine
+    synthesizes during reconciliation are published to the msgbus, but
+    ``Strategy.handle_event`` drops non-RUNNING events silently (see
+    ``trading/strategy.pyx`` line 1917: ``if self._fsm.state !=
+    ComponentState.RUNNING: return``). Net effect: pre-existing venue
+    exposure at restart never reaches ``on_order_filled``, and
+    ``_state.usd_spent`` / ``_state.positions`` stay at their defaults.
+    Per-market USD caps then reset on every restart — this is BUGS.md
+    B-002.
+
+    Fix: read what the reconciliation pass left in the cache during
+    ``on_start`` (after FSM has transitioned to RUNNING).
+
+    SHORT/FLAT filter: Consensus-Fade +1 only opens LONG NO positions via
+    BUY. A SHORT or FLAT position at startup is either a different
+    strategy's or a wallet anomaly — defensively skip so we never credit
+    phantom USD against this strategy's caps.
+
+    avg_px fallback: Polymarket's position reports often lack avg_px
+    (fill arrives in the match-then-accept path with last_px=0.00; see
+    BUGS.md F-002). That propagates through ``Position.avg_px_open`` as
+    0.0. When it's 0, fall back to ``max_no_price`` — conservative, since
+    it overcounts USD spent so the cap fires earlier, not later. An IOC
+    placed at max_no_price cannot have filled above it.
+    """
+    seeds: list[tuple[InstrumentId, float, float, float]] = []
+    for pos in positions:
+        if pos.signed_qty <= 0:
+            continue
+        qty = float(pos.quantity)
+        original_px = float(pos.avg_px_open)
+        effective_px = original_px if original_px > 0.0 else fallback_px
+        seeds.append((pos.instrument_id, qty, effective_px, original_px))
+    return seeds
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURES_PATH = REPO_ROOT / "data" / "processed" / "backtest_v3" / "features.parquet"
 MARKETS_PATH = REPO_ROOT / "data" / "processed" / "polymarket_weather" / "markets.parquet"
@@ -338,6 +389,15 @@ class ConsensusFadeStrategy(Strategy):
             color=LogColor.BLUE,
         )
 
+        # Seed _state from venue exposure that Nautilus's startup
+        # reconciliation has already written to the cache. See
+        # compute_reconciled_position_seeds docstring — the TL;DR is that
+        # reconciliation's inferred OrderFilled events bypass on_order_filled
+        # (strategy FSM is still READY when they fire), so without this step
+        # the per-market USD cap resets on every restart. Runs even if no
+        # positions exist (no-op) — cheap walk of an empty list.
+        self._seed_state_from_reconciled_positions()
+
         # Kick off the continuous polling loop.
         self._state.running = True
         self._loop_task = asyncio.ensure_future(self._main_loop())
@@ -352,6 +412,43 @@ class ConsensusFadeStrategy(Strategy):
             f"book-snapshot timer every {BOOK_SNAPSHOT_INTERVAL}",
             color=LogColor.BLUE,
         )
+
+    def _seed_state_from_reconciled_positions(self) -> None:
+        """Read cache positions populated by Nautilus startup reconciliation
+        and credit them against _state.positions + _state.usd_spent.
+
+        Called from on_start. Pure logic lives in
+        compute_reconciled_position_seeds at module scope so it can be
+        unit-tested without standing up a TradingNode.
+        """
+        seeds = compute_reconciled_position_seeds(
+            self.cache.positions_open(),
+            self.config.max_no_price,
+        )
+        for iid, qty, effective_px, original_px in seeds:
+            usd = qty * effective_px
+            self._state.positions[iid] = self._state.positions.get(iid, 0) + qty
+            self._state.usd_spent[iid] = self._state.usd_spent.get(iid, 0.0) + usd
+            if self._ledger is not None:
+                self._ledger.log(
+                    "position_seeded_from_cache",
+                    instrument_id=str(iid),
+                    quantity=qty,
+                    avg_px_open=original_px,
+                    effective_px=effective_px,
+                    usd_spent=round(usd, 4),
+                )
+            self.log.info(
+                f"seeded reconciled position  {iid}  qty={qty} "
+                f"avg_px=${effective_px:.4f} usd=${usd:.2f}",
+                color=LogColor.BLUE,
+            )
+        if seeds:
+            self.log.info(
+                f"seeded {len(seeds)} reconciled position(s) from cache into "
+                f"_state.usd_spent (protects per-market USD cap across restarts)",
+                color=LogColor.GREEN,
+            )
 
     def on_stop(self) -> None:
         self._state.running = False

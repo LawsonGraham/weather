@@ -351,12 +351,21 @@ Single-day P&L is skewed.
 
 ### Risk-control caveats
 
-- **USD cap is in-memory.** If the strategy restarts mid-day,
-  `usd_spent` resets to zero per instrument. Fix via `on_start`
-  reconciliation from ledger before scaling past ~$100/day total
-  notional.
-- **Nautilus reconciles positions from venue state on startup**, so
-  share counts are safe across restarts — not USD counts.
+- **USD cap is reconciled from venue state on every `on_start`.**
+  `usd_spent` lives in memory but is re-seeded at startup from
+  `cache.positions_open()`, which Nautilus populates during the
+  kernel's startup reconciliation pass. When the venue reports
+  an `avg_px` it's used directly; when it doesn't (common for
+  Polymarket — the match-then-accept path produces
+  `last_px=$0.00`), the seed falls back to `max_no_price`, which
+  overcounts and fires the cap earlier/safer. See
+  `compute_reconciled_position_seeds` in `strategy.py` for why
+  this is necessary: inferred `OrderFilled` events fire before
+  the strategy's FSM transitions to `RUNNING`, so
+  `on_order_filled` can't be relied on for pre-existing exposure.
+- **Share counts are also reconciled from venue state on startup.**
+  Between position counts and the USD re-seed, risk controls are
+  safe across restarts.
 
 ## 8. Deployment checklist
 
