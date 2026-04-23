@@ -53,35 +53,6 @@ first live daily session on 2026-04-22.
 
 ---
 
-### B-004 — Yesterday's expired markets resubscribe/unsubscribe on a 5-min cycle
-
-- **Severity**: LOW (cosmetic — log noise, Gamma API calls)
-- **Status**: Open
-- **Observed**: Continuously throughout 2026-04-22
-- **Symptom**: Expired markets (past `end_date + 24h grace`) are
-  detected and unsubscribed by `_unsubscribe_expired`. But the next
-  `_refresh_subscribed_and_active` tick (when features.parquet changes)
-  re-runs discovery with `d_offset=-1` (yesterday), finds the expired
-  markets in `markets.parquet`, and resubscribes them. Next 5-min
-  expiry scan unsubscribes them again. Cycle.
-- **Evidence**: 2026-04-22 ledger has **238 subscribed** and
-  **245 unsubscribed** events against only 3 actually-active markets.
-  The ratio of real subscribes (3) to churn events is ~1:160.
-- **Impact**: Ledger bloat; minor Gamma API load; no financial impact.
-- **Triage**:
-  1. Verify by reading consecutive `_refresh_subscribed_and_active` log
-     lines to confirm the re-sub/unsub pattern.
-- **Proposed fix**: In `discover.py::discover_tradeable_markets`, filter
-  markets whose `end_date` has already passed the 24h grace window:
-  ```python
-  # Drop markets where end_date + 24h grace < now
-  grace_end = datetime.combine(target_date + timedelta(days=1), time(0, 0), UTC)
-  if grace_end < datetime.now(UTC):
-      continue
-  ```
-
----
-
 ### B-005 — No process-health alerting
 
 - **Severity**: LOW (operational, not a code bug)
@@ -102,6 +73,58 @@ first live daily session on 2026-04-22.
 ---
 
 ## FIXED
+
+### F-007 — Yesterday's expired markets resubscribe/unsubscribe on a 5-min cycle (was B-004)
+
+- **Severity at time of finding**: LOW (cosmetic — log noise, Gamma
+  API calls; no financial impact)
+- **Fixed in**: branch `wt/b004-discover-filter`, commit 8b644c3
+  (`fix(B-004): skip past-grace dates in discover_tradeable_markets`),
+  2026-04-23. Merged to main.
+- **Observed**: Continuously throughout 2026-04-22 and 2026-04-23
+- **Root cause**: Two subsystems disagreed on what "active" means and
+  trapped each other in a 5-min feedback loop.
+  `strategy.py::_refresh_subscribed_and_active` iterates
+  `for d_offset in range(-1, lookahead_days + 1)` and calls
+  `discover_tradeable_markets(today + d_offset)` — so `d_offset=-1`
+  passes yesterday's date. Discovery had **no filter on past-grace
+  target dates** and returned any markets matching the consensus
+  gate for that date. Strategy subscribed to them. On the next
+  tick (≤5min later), `_unsubscribe_expired` noted
+  `expiration_ns + 24h grace < now` and tore them down. Next
+  `_refresh_subscribed_and_active` re-ran discovery, got the same
+  markets back, resubscribed. Cycle.
+- **Why 24h grace**: Polymarket's Gamma API returns `end_date_iso`
+  as a date-only string (e.g. `"2026-04-22"`); Nautilus's adapter
+  parses that as midnight UTC. Real market close is typically noon
+  UTC plus resolution delay, so strategy adds 24h grace before
+  tearing down subscriptions. The discover path had no mirror of
+  this logic.
+- **Evidence**: 2026-04-22 ledger had **238 subscribed** + **245
+  unsubscribed** events against only 3 actually-active markets
+  (Atlanta 84-85°F, LA 70-71°F, Miami 82-83°F). 2026-04-23 early
+  AM showed the same pattern continuing on 04-22 markets
+  (42 sub / 42 unsub in the first few hours).
+- **Fix**: Add Filter (1) in
+  `discover.py::discover_tradeable_markets` that fails fast:
+  ```python
+  grace_end = datetime.combine(target_date + timedelta(days=1),
+                               time(0, 0, 0), UTC)
+  if grace_end < datetime.now(UTC):
+      return []
+  ```
+  New module-level `EXPIRY_GRACE = timedelta(hours=24)` mirrors
+  `strategy.py::_unsubscribe_expired`'s `grace_ns` — the comment
+  cross-references so the two stay in sync. Filter runs before
+  any DuckDB work, so stale dates incur zero parquet I/O.
+- **Proof** (2026-04-23 03:58Z vs 03:59Z on worktree copy):
+  | target date | before fix | after fix |
+  |---|---|---|
+  | 04-21 (past-grace 28h) | 5 markets | 0 ✓ |
+  | 04-22 (past-grace 4h) | 3 markets | 0 ✓ |
+  | 04-23 (valid today) | 0 (HRRR NaN) | 0 (HRRR NaN) — unchanged |
+- **Operator note**: live strategy process (`cfp run`) imports
+  `discover` once at startup. Fix only takes effect after restart.
 
 ### F-006 — Polymarket WSS dynamic subscribe message silently ignored (was B-001)
 
